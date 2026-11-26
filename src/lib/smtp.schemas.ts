@@ -126,6 +126,40 @@ export const TestTeamsConfigSchema = z.object({
 
 export type TestTeamsConfigInput = z.infer<typeof TestTeamsConfigSchema>;
 
+export type WhatsAppIntegrationMode = "cloud_api" | "webhook";
+
+export const SaveWhatsAppConfigSchema = z.object({
+  mode: z.enum(["cloud_api", "webhook"]).default("cloud_api"),
+  phoneNumberId: z.string().trim().max(64).optional().default(""),
+  recipientPhone: z
+    .string()
+    .trim()
+    .max(32)
+    .refine(
+      (v) => v === "" || /^\+?[0-9\s()-]{7,20}$/.test(v),
+      "Enter a valid WhatsApp phone number with country code (e.g. +919876543210).",
+    )
+    .optional()
+    .default(""),
+  accessToken: z.string().trim().max(1024).optional(),
+  webhookUrl: z
+    .string()
+    .trim()
+    .max(1024)
+    .refine(
+      (v) => v === "" || /^https:\/\/[a-z0-9.-]+(?:\/.*)?$/i.test(v),
+      "Enter a valid HTTPS WhatsApp webhook URL.",
+    )
+    .optional(),
+  enabled: z.boolean().default(true),
+});
+
+export type SaveWhatsAppConfigInput = z.infer<typeof SaveWhatsAppConfigSchema>;
+
+export const TestWhatsAppConfigSchema = SaveWhatsAppConfigSchema;
+
+export type TestWhatsAppConfigInput = z.infer<typeof TestWhatsAppConfigSchema>;
+
 export interface PublicSmtpConfig {
   configured: boolean;
   providerLabel: string;
@@ -146,5 +180,13 @@ export interface PublicSmtpConfig {
   teamsLastVerifiedAt: string | null;
   teamsLastTestStatus: "verified" | "failed" | null;
   teamsLastTestError: string | null;
+  hasWhatsAppConfig: boolean;
+  whatsappMode: WhatsAppIntegrationMode;
+  whatsappPhoneNumberId: string;
+  whatsappRecipientPhone: string;
+  whatsappEnabled: boolean;
+  whatsappLastVerifiedAt: string | null;
+  whatsappLastTestStatus: "verified" | "failed" | null;
+  whatsappLastTestError: string | null;
   updatedAt: string | null;
 }

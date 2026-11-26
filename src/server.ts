@@ -400,7 +400,9 @@ async function handleMomApi(request: Request): Promise<Response | null> {
 
 async function handleUsersApi(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
-  if (url.pathname !== "/api/users") {
+  const isBaseUsersRoute = url.pathname === "/api/users";
+  const isUserByIdRoute = url.pathname.startsWith("/api/users/");
+  if (!isBaseUsersRoute && !isUserByIdRoute) {
     return null;
   }
 
@@ -416,42 +418,85 @@ async function handleUsersApi(request: Request): Promise<Response | null> {
     return json({ ok: false, error: "Unauthorized: Please sign in to continue." }, 401);
   }
 
+  if (request.method !== "GET") {
+    const originHeader = request.headers.get("origin");
+    const hostHeader = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+    const hasSessionHeader = Boolean(request.headers.get("x-sace-session"));
+    if (originHeader && hostHeader && !hasSessionHeader) {
+      try {
+        if (new URL(originHeader).host !== hostHeader) {
+          return json({ ok: false, error: "Forbidden: Cross-origin request rejected." }, 403);
+        }
+      } catch {
+        return json({ ok: false, error: "Forbidden: Invalid origin header." }, 403);
+      }
+    }
+  }
+
   try {
-    if (request.method === "GET") {
+    if (isBaseUsersRoute && request.method === "GET") {
       const { listUsersRecord } = await import("./lib/accounts.server.ts");
       const users = await listUsersRecord({ userId: auth.userId, role: auth.role });
       return json({ ok: true, users }, 200);
     }
 
-    if (request.method === "POST") {
-      const originHeader = request.headers.get("origin");
-      const hostHeader =
-        request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
-      const hasSessionHeader = Boolean(request.headers.get("x-sace-session"));
-      if (originHeader && hostHeader && !hasSessionHeader) {
-        try {
-          if (new URL(originHeader).host !== hostHeader) {
-            return json({ ok: false, error: "Forbidden: Cross-origin request rejected." }, 403);
-          }
-        } catch {
-          return json({ ok: false, error: "Forbidden: Invalid origin header." }, 403);
-        }
-      }
-
+    if (isBaseUsersRoute && request.method === "POST") {
       const payload = await request.json();
       const { createAccountRecord } = await import("./lib/accounts.server.ts");
       const result = await createAccountRecord({ userId: auth.userId, role: auth.role }, payload);
       return json(result, 201);
     }
 
+    if (isUserByIdRoute && (request.method === "PUT" || request.method === "PATCH")) {
+      const targetUserId = decodeURIComponent(url.pathname.slice("/api/users/".length)).trim();
+      if (!targetUserId || targetUserId.includes("/")) {
+        return json({ ok: false, error: "User ID is required." }, 400);
+      }
+      const rawBody = (await request.json()) as Record<string, unknown>;
+      const { saveAccountRecord } = await import("./lib/accounts.server.ts");
+      const result = await saveAccountRecord(
+        { userId: auth.userId, role: auth.role },
+        { ...(rawBody && typeof rawBody === "object" ? rawBody : {}), userId: targetUserId },
+      );
+      return json(result, 200);
+    }
+
+    if (isUserByIdRoute && request.method === "DELETE") {
+      const targetUserId = decodeURIComponent(url.pathname.slice("/api/users/".length)).trim();
+      if (!targetUserId) {
+        return json({ ok: false, error: "User ID is required." }, 400);
+      }
+      const { deleteAccountRecord } = await import("./lib/accounts.server.ts");
+      const result = await deleteAccountRecord(
+        { userId: auth.userId, role: auth.role },
+        { userId: targetUserId },
+      );
+      return json(result, 200);
+    }
+
     return json({ ok: false, error: "Method not allowed." }, 405);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Account request failed.";
+    let message = err instanceof Error ? err.message : "Account request failed.";
+    if (
+      err &&
+      typeof err === "object" &&
+      "issues" in err &&
+      Array.isArray((err as { issues?: Array<{ message?: string }> }).issues)
+    ) {
+      const firstIssue = (err as { issues: Array<{ message?: string }> }).issues[0];
+      if (firstIssue?.message) {
+        message = firstIssue.message;
+      }
+    }
     const status = message.startsWith("Forbidden:")
       ? 403
-      : message.toLowerCase().includes("already exists")
-        ? 409
-        : 400;
+      : message.toLowerCase().includes("not found")
+        ? 404
+        : message.toLowerCase().includes("already exists")
+          ? 409
+          : message.startsWith("Database error:")
+            ? 503
+            : 400;
     return json({ ok: false, error: message }, status);
   }
 }
@@ -471,7 +516,9 @@ async function handleSmtpApi(request: Request): Promise<Response | null> {
     url.pathname !== "/api/smtp" &&
     url.pathname !== "/api/smtp/test" &&
     url.pathname !== "/api/smtp/teams" &&
-    url.pathname !== "/api/smtp/teams/test"
+    url.pathname !== "/api/smtp/teams/test" &&
+    url.pathname !== "/api/smtp/whatsapp" &&
+    url.pathname !== "/api/smtp/whatsapp/test"
   ) {
     return null;
   }
@@ -553,6 +600,29 @@ async function handleSmtpApi(request: Request): Promise<Response | null> {
       return json(result, 200);
     }
 
+    if (
+      url.pathname === "/api/smtp/whatsapp" &&
+      (request.method === "POST" || request.method === "PUT")
+    ) {
+      const payload = await request.json();
+      const { saveMyWhatsAppConfigRecord } = await import("./lib/smtp.server.ts");
+      const result = await saveMyWhatsAppConfigRecord(auth.userId, payload);
+      return json(result, 200);
+    }
+
+    if (url.pathname === "/api/smtp/whatsapp" && request.method === "DELETE") {
+      const { deleteMyWhatsAppConfigRecord } = await import("./lib/smtp.server.ts");
+      const result = await deleteMyWhatsAppConfigRecord(auth.userId);
+      return json(result, 200);
+    }
+
+    if (url.pathname === "/api/smtp/whatsapp/test" && request.method === "POST") {
+      const payload = await request.json();
+      const { testMyWhatsAppConfigRecord } = await import("./lib/smtp.server.ts");
+      const result = await testMyWhatsAppConfigRecord(auth.userId, payload);
+      return json(result, 200);
+    }
+
     return json({ ok: false, error: "Method not allowed." }, 405);
   } catch (err) {
     console.error("[SMTP API Error]", err);
@@ -563,9 +633,143 @@ async function handleSmtpApi(request: Request): Promise<Response | null> {
   }
 }
 
+async function handleOwnerApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  if (!path.startsWith("/api/owner/")) {
+    return null;
+  }
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+
+  const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
+  const auth = await resolveAuthenticatedUserFromRequest(request);
+  if (!auth) {
+    return json({ ok: false, error: "Unauthorized: Please sign in to continue." }, 401);
+  }
+
+  if (auth.role !== "super_admin") {
+    return json(
+      {
+        ok: false,
+        error: "Forbidden: Owner's Executive Dashboard is restricted to Super Admin only.",
+      },
+      403,
+    );
+  }
+
+  if (request.method !== "GET") {
+    const originHeader = request.headers.get("origin");
+    const hostHeader = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+    const hasSessionHeader = Boolean(request.headers.get("x-sace-session"));
+    if (originHeader && hostHeader && !hasSessionHeader) {
+      try {
+        if (new URL(originHeader).host !== hostHeader) {
+          return json({ ok: false, error: "Forbidden: Cross-origin request rejected." }, 403);
+        }
+      } catch {
+        return json({ ok: false, error: "Forbidden: Invalid origin header." }, 403);
+      }
+    }
+  }
+
+  try {
+    if (path === "/api/owner/analytics" && request.method === "GET") {
+      const { getOwnerAnalyticsRecord } = await import("./lib/owner.server.ts");
+      const data = await getOwnerAnalyticsRecord(auth.userId, auth.role);
+      return json(data, 200);
+    }
+
+    if (path === "/api/owner/companies" && request.method === "POST") {
+      const payload = await request.json();
+      const { createCompanyRecord } = await import("./lib/owner.server.ts");
+      const result = await createCompanyRecord(auth.userId, auth.role, payload);
+      return json(result, 201);
+    }
+
+    if (path.startsWith("/api/owner/companies/")) {
+      const companyId = decodeURIComponent(path.slice("/api/owner/companies/".length)).trim();
+      if (!companyId || companyId.includes("/")) {
+        return json({ ok: false, error: "Invalid company ID." }, 400);
+      }
+      if (request.method === "PUT" || request.method === "PATCH") {
+        const payload = await request.json();
+        const { updateCompanyRecord } = await import("./lib/owner.server.ts");
+        const result = await updateCompanyRecord(auth.userId, auth.role, companyId, payload);
+        return json(result, 200);
+      }
+      if (request.method === "DELETE") {
+        const { deleteCompanyRecord } = await import("./lib/owner.server.ts");
+        const result = await deleteCompanyRecord(auth.userId, auth.role, companyId);
+        return json(result, 200);
+      }
+    }
+
+    if (path === "/api/owner/initiatives" && request.method === "POST") {
+      const payload = await request.json();
+      const { createInitiativeRecord } = await import("./lib/owner.server.ts");
+      const result = await createInitiativeRecord(auth.userId, auth.role, payload);
+      return json(result, 201);
+    }
+
+    if (path.startsWith("/api/owner/initiatives/")) {
+      const initiativeId = decodeURIComponent(path.slice("/api/owner/initiatives/".length)).trim();
+      if (!initiativeId || initiativeId.includes("/")) {
+        return json({ ok: false, error: "Invalid initiative ID." }, 400);
+      }
+      if (request.method === "PUT" || request.method === "PATCH") {
+        const payload = await request.json();
+        const { updateInitiativeRecord } = await import("./lib/owner.server.ts");
+        const result = await updateInitiativeRecord(auth.userId, auth.role, initiativeId, payload);
+        return json(result, 200);
+      }
+      if (request.method === "DELETE") {
+        const { deleteInitiativeRecord } = await import("./lib/owner.server.ts");
+        const result = await deleteInitiativeRecord(auth.userId, auth.role, initiativeId);
+        return json(result, 200);
+      }
+    }
+
+    return json({ ok: false, error: "Method not allowed." }, 405);
+  } catch (err) {
+    console.error("[Owner API Error]", err);
+    let message = err instanceof Error ? err.message : "Owner dashboard request failed.";
+    if (
+      err &&
+      typeof err === "object" &&
+      "issues" in err &&
+      Array.isArray((err as { issues?: Array<{ message?: string }> }).issues)
+    ) {
+      const firstIssue = (err as { issues: Array<{ message?: string }> }).issues[0];
+      if (firstIssue?.message) {
+        message = firstIssue.message;
+      }
+    }
+    const lower = message.toLowerCase();
+    const status = message.startsWith("Forbidden:")
+      ? 403
+      : lower.includes("not found")
+        ? 404
+        : lower.includes("too many requests")
+          ? 429
+          : message.startsWith("Database error:")
+            ? 503
+            : 400;
+    return json({ ok: false, error: message }, status);
+  }
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const ownerResponse = await handleOwnerApi(request);
+      if (ownerResponse) {
+        return withSecurityHeaders(ownerResponse);
+      }
       const leaveDecisionResponse = await handleLeaveEmailDecisionApi(request);
       if (leaveDecisionResponse) {
         return withSecurityHeaders(leaveDecisionResponse);

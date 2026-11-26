@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { db } from "../db/index.ts";
+import { assertPersistentStorageReady, db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import {
   ensurePortalInitialized,
   getAdminPermsFromState,
   hashPassword,
+  stripCredentialsFromUsers,
   toPublicUser,
 } from "./auth.server.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
@@ -14,6 +15,7 @@ import {
   DeleteAccountSchema,
   SaveAccountSchema,
   SaveAdminPermsSchema,
+  normalizeAccountPayloadKeys,
   type CreateAccountInput,
   type SaveAccountInput,
 } from "./accounts.schemas.ts";
@@ -24,6 +26,26 @@ const PORTAL_STATE_ID = "current_state";
 interface CallerContext {
   userId: string;
   role: Role;
+}
+
+async function syncUsersToPortalState(): Promise<void> {
+  const [allUsers, stateRows] = await Promise.all([
+    db.select().from(schema.users),
+    db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
+  ]);
+  const current = stateRows[0]?.data as AppState | undefined;
+  if (!current) return;
+  const publicUsers = stripCredentialsFromUsers(allUsers.map(toPublicUser));
+  await db
+    .update(schema.portalState)
+    .set({
+      data: {
+        ...current,
+        users: publicUsers,
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.portalState.id, PORTAL_STATE_ID));
 }
 
 export async function listUsersRecord(caller: CallerContext): Promise<User[]> {
@@ -51,7 +73,7 @@ export async function createAccountRecord(
   caller: CallerContext,
   rawInput: CreateAccountInput | unknown,
 ): Promise<{ ok: true; user: User }> {
-  const data = CreateAccountSchema.parse(rawInput);
+  const data = CreateAccountSchema.parse(normalizeAccountPayloadKeys(rawInput));
 
   const isSuperAdmin = caller.role === "super_admin";
   if (!isSuperAdmin) {
@@ -68,6 +90,7 @@ export async function createAccountRecord(
   }
 
   assertRateLimit(`accounts:${caller.userId}`, { limit: 30, windowMs: 60_000 });
+  await assertPersistentStorageReady();
   await ensurePortalInitialized();
 
   const email = data.email.trim().toLowerCase();
@@ -125,8 +148,18 @@ export async function createAccountRecord(
     await supabaseAdmin.from("user_roles").insert({ user_id: id, role: data.role });
   }
 
-  const casualBalance = data.casualBalance ?? 12;
-  const sickBalance = data.sickBalance ?? 8;
+  const skipSchedule = Boolean(data.skipSchedule);
+  const casualBalance = skipSchedule ? 12 : (data.casualBalance ?? 12);
+  const sickBalance = skipSchedule ? 12 : (data.sickBalance ?? 12);
+  const shiftStartTime = skipSchedule ? null : (data.shiftStartTime ?? null);
+  const shiftEndTime = skipSchedule ? null : (data.shiftEndTime ?? null);
+  const weekOffs = skipSchedule
+    ? null
+    : Array.isArray(data.weekOffs)
+      ? Array.from(new Set(data.weekOffs))
+      : null;
+  const workMode = skipSchedule ? "WFO" : (data.workMode ?? "WFO");
+  const geoFenceMandatory = skipSchedule ? true : (data.geoFenceMandatory ?? true);
 
   await db.insert(schema.users).values({
     id,
@@ -134,8 +167,8 @@ export async function createAccountRecord(
     username,
     email,
     password: hashPassword(data.password),
-    designation: data.designation.trim() || "Team Member",
-    department: data.department.trim() || "General",
+    designation: (data.designation ?? "").trim() || "Team Member",
+    department: (data.department ?? "").trim() || "General",
     role: data.role,
     reportingAdminId,
     active: true,
@@ -145,6 +178,11 @@ export async function createAccountRecord(
     avatarUrl: null,
     casualBalance,
     sickBalance,
+    shiftStartTime,
+    shiftEndTime,
+    weekOffs,
+    workMode,
+    geoFenceMandatory,
   });
 
   const persistedRows = await db
@@ -158,6 +196,8 @@ export async function createAccountRecord(
     throw new Error("Account insertion could not be verified in the database.");
   }
 
+  await syncUsersToPortalState();
+
   return {
     ok: true as const,
     user: toPublicUser(persisted),
@@ -168,9 +208,10 @@ export async function saveAccountRecord(
   caller: CallerContext,
   rawInput: SaveAccountInput | unknown,
 ): Promise<{ ok: true; user?: User }> {
-  const data = SaveAccountSchema.parse(rawInput);
+  const data = SaveAccountSchema.parse(normalizeAccountPayloadKeys(rawInput));
 
   assertRateLimit(`accounts:${caller.userId}`, { limit: 60, windowMs: 60_000 });
+  await assertPersistentStorageReady();
   await ensurePortalInitialized();
 
   const isSuperAdmin = caller.role === "super_admin";
@@ -191,6 +232,13 @@ export async function saveAccountRecord(
     throw new Error("Account not found.");
   }
 
+  const hasPolicyChange =
+    data.shiftStartTime !== undefined ||
+    data.shiftEndTime !== undefined ||
+    data.weekOffs !== undefined ||
+    data.workMode !== undefined ||
+    data.geoFenceMandatory !== undefined;
+
   if (!isSuperAdmin) {
     if (data.role !== undefined || data.reportingAdminId !== undefined) {
       throw new Error("Forbidden: Only a Super Admin can change roles or reporting lines.");
@@ -201,7 +249,7 @@ export async function saveAccountRecord(
       const canManageUsers = isAdmin && adminPerms.includes("manage_users");
       const canApproveLeave = isAdmin && adminPerms.includes("approve_leave");
 
-      const onlyBalanceChange =
+      const onlyBalanceOrPolicyChange =
         data.fullName === undefined &&
         data.email === undefined &&
         data.designation === undefined &&
@@ -217,15 +265,13 @@ export async function saveAccountRecord(
         targetUser.reportingAdminId === caller.userId &&
         data.password === undefined &&
         data.dailyVision === undefined &&
-        data.avatarUrl === undefined &&
-        data.casualBalance === undefined &&
-        data.sickBalance === undefined;
+        data.avatarUrl === undefined;
 
       if (
         !(
           isAdmin &&
-          onlyBalanceChange &&
-          (canApproveLeave || targetUser.reportingAdminId === caller.userId)
+          onlyBalanceOrPolicyChange &&
+          (canApproveLeave || canManageUsers || targetUser.reportingAdminId === caller.userId)
         ) &&
         !isAuthorizedMemberEdit
       ) {
@@ -240,8 +286,10 @@ export async function saveAccountRecord(
       if (data.active !== undefined) {
         throw new Error("Forbidden: Only a Super Admin can change account active status.");
       }
-      if (data.casualBalance !== undefined || data.sickBalance !== undefined) {
-        throw new Error("Forbidden: You cannot modify your own leave balances.");
+      if (data.casualBalance !== undefined || data.sickBalance !== undefined || hasPolicyChange) {
+        throw new Error(
+          "Forbidden: You cannot modify your own leave balances or attendance policy.",
+        );
       }
     }
   }
@@ -256,12 +304,20 @@ export async function saveAccountRecord(
   if (data.reportingAdminId !== undefined) dbPatch.reportingAdminId = data.reportingAdminId;
   if (data.casualBalance !== undefined) dbPatch.casualBalance = data.casualBalance;
   if (data.sickBalance !== undefined) dbPatch.sickBalance = data.sickBalance;
+  if (data.shiftStartTime !== undefined) dbPatch.shiftStartTime = data.shiftStartTime;
+  if (data.shiftEndTime !== undefined) dbPatch.shiftEndTime = data.shiftEndTime;
+  if (data.weekOffs !== undefined) {
+    dbPatch.weekOffs = Array.isArray(data.weekOffs) ? Array.from(new Set(data.weekOffs)) : null;
+  }
+  if (data.workMode !== undefined) dbPatch.workMode = data.workMode;
+  if (data.geoFenceMandatory !== undefined) dbPatch.geoFenceMandatory = data.geoFenceMandatory;
   if (data.active !== undefined) dbPatch.active = data.active;
   if (data.role !== undefined) dbPatch.role = data.role;
   if (data.password !== undefined) dbPatch.password = hashPassword(data.password);
 
   if (Object.keys(dbPatch).length > 0) {
     await db.update(schema.users).set(dbPatch).where(eq(schema.users.id, data.userId));
+    await syncUsersToPortalState();
   }
 
   const { hasSupabaseAdminConfig } = await import("@/integrations/supabase/client.server");
@@ -313,22 +369,52 @@ export async function saveAccountRecord(
 export async function deleteAccountRecord(
   caller: CallerContext,
   rawInput: { userId: string } | unknown,
-): Promise<{ ok: true }> {
+): Promise<{ ok: true; deletedUserId: string }> {
   const data = DeleteAccountSchema.parse(rawInput);
 
-  if (caller.role !== "super_admin") {
-    throw new Error("Forbidden: Only a Super Admin can delete an account.");
+  if (caller.role !== "super_admin" && caller.role !== "admin") {
+    throw new Error("Forbidden: Only a Super Admin or Admin can delete an account.");
   }
-  if (data.userId === caller.userId || data.userId === "u-hakeem") {
-    throw new Error("You cannot delete your own or the primary Super Admin account.");
+  if (
+    data.userId === caller.userId ||
+    data.userId === "u-hakeem" ||
+    data.userId === "u-superadmin"
+  ) {
+    throw new Error("Forbidden: You cannot delete your own or the primary Super Admin account.");
   }
 
+  await assertPersistentStorageReady();
   await ensurePortalInitialized();
+
+  const targetRows = await db
+    .select()
+    .from(schema.users)
+    .where(eq(schema.users.id, data.userId))
+    .limit(1);
+  const targetUser = targetRows[0];
+  if (!targetUser) {
+    throw new Error("Account not found.");
+  }
+
+  if (caller.role === "admin") {
+    const adminPerms = await getAdminPermsFromState();
+    if (!adminPerms.includes("manage_users")) {
+      throw new Error("Forbidden: You do not have permission to delete team accounts.");
+    }
+    if (targetUser.role !== "member" || targetUser.reportingAdminId !== caller.userId) {
+      throw new Error(
+        "Forbidden: Admins can only delete Team Member accounts that report directly to them.",
+      );
+    }
+  }
+
   await db.delete(schema.users).where(eq(schema.users.id, data.userId));
   await db
     .update(schema.users)
     .set({ reportingAdminId: null })
     .where(eq(schema.users.reportingAdminId, data.userId));
+
+  await syncUsersToPortalState();
 
   const { hasSupabaseAdminConfig } = await import("@/integrations/supabase/client.server");
   if (hasSupabaseAdminConfig()) {
@@ -342,7 +428,7 @@ export async function deleteAccountRecord(
     }
   }
 
-  return { ok: true as const };
+  return { ok: true as const, deletedUserId: data.userId };
 }
 
 export async function saveAdminPermsRecord(

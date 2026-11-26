@@ -1,7 +1,7 @@
 import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { Trash2, UserPlus } from "lucide-react";
+import { CalendarClock, Trash2, UserPlus } from "lucide-react";
 import {
   AppShell,
   EmptyState,
@@ -11,18 +11,14 @@ import {
   roleLabel,
 } from "@/components/app-shell";
 import { StatusPill } from "@/components/portal-ui";
+import {
+  CreateUserDialog,
+  EditUserPolicyDialog,
+  UserPolicyBadge,
+  type EditablePolicyUser,
+} from "@/components/user-account-dialogs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -42,7 +38,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { PASSWORD_POLICY_ERROR, isStrongPassword } from "@/lib/security";
 import { useApp } from "@/lib/store";
 import type { Role } from "@/lib/types";
 
@@ -71,24 +66,14 @@ export const Route = createFileRoute("/team")({
 });
 
 function TeamPage() {
-  const { state, me, can, createAccount, saveUser, deleteAccount, log, visibleUsers } = useApp();
+  const { state, me, can, saveUser, deleteAccount, log, visibleUsers } = useApp();
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [createBusy, setCreateBusy] = React.useState(false);
-  const [createForm, setCreateForm] = React.useState({
-    fullName: "",
-    email: "",
-    password: "",
-    designation: "",
-    department: "",
-    role: "member" as Role,
-    reportingAdminId: "",
-  });
+  const [policyUser, setPolicyUser] = React.useState<EditablePolicyUser | null>(null);
 
   if (!can("manage_users")) return <NoAccess />;
   const people = visibleUsers();
   const canManageAdmins = can("manage_admins");
   const isSuperAdmin = me?.role === "super_admin";
-  const admins = state.users.filter((u) => u.role !== "member");
 
   const apply = async (
     input: Parameters<typeof saveUser>[0],
@@ -113,60 +98,6 @@ function TeamPage() {
     toast.success(`${fullName}'s account has been permanently deleted.`);
   };
 
-  const handleCreateAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const email = createForm.email.trim().toLowerCase();
-    if (!email) {
-      toast.error("Please enter a valid email address.");
-      return;
-    }
-    if (state.users.some((u) => u.email.toLowerCase() === email)) {
-      toast.error("An account with that email already exists");
-      return;
-    }
-    if (!isStrongPassword(createForm.password)) {
-      toast.error(PASSWORD_POLICY_ERROR);
-      return;
-    }
-    const assignedRole: Role = isSuperAdmin ? createForm.role : "member";
-    const reportingAdminId =
-      assignedRole === "member"
-        ? isSuperAdmin
-          ? createForm.reportingAdminId || null
-          : (me?.id ?? null)
-        : null;
-
-    setCreateBusy(true);
-    const res = await createAccount({
-      fullName: createForm.fullName.trim(),
-      email,
-      password: createForm.password,
-      designation: createForm.designation.trim() || roleLabel(assignedRole),
-      department: createForm.department.trim() || "General",
-      role: assignedRole,
-      reportingAdminId,
-      avatarColor: assignedRole === "member" ? "var(--brand-gold)" : "var(--brand-purple)",
-    });
-    setCreateBusy(false);
-
-    if (!res.ok) {
-      toast.error(res.error ?? "Could not create the account");
-      return;
-    }
-    log("account_created", `${createForm.fullName.trim()} (${roleLabel(assignedRole)})`);
-    toast.success(`${createForm.fullName.trim()} can now sign in with ${email}`);
-    setCreateForm({
-      fullName: "",
-      email: "",
-      password: "",
-      designation: "",
-      department: "",
-      role: "member",
-      reportingAdminId: "",
-    });
-    setCreateOpen(false);
-  };
-
   return (
     <>
       <PageHeader
@@ -186,117 +117,7 @@ function TeamPage() {
         }
       />
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="rounded-2xl sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Create team account</DialogTitle>
-            <DialogDescription>
-              Create a persistent account with email, password, department and designation.
-            </DialogDescription>
-          </DialogHeader>
-          <form className="space-y-4" onSubmit={handleCreateAccount}>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="team-acc-name">Full name</Label>
-                <Input
-                  id="team-acc-name"
-                  value={createForm.fullName}
-                  onChange={(e) => setCreateForm((f) => ({ ...f, fullName: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="team-acc-email">Email</Label>
-                <Input
-                  id="team-acc-email"
-                  type="email"
-                  value={createForm.email}
-                  onChange={(e) => setCreateForm((f) => ({ ...f, email: e.target.value }))}
-                  required
-                />
-              </div>
-              <div className="space-y-2 sm:col-span-2">
-                <Label htmlFor="team-acc-password">Password (min 12 chars)</Label>
-                <Input
-                  id="team-acc-password"
-                  type="password"
-                  autoComplete="new-password"
-                  value={createForm.password}
-                  onChange={(e) => setCreateForm((f) => ({ ...f, password: e.target.value }))}
-                  placeholder="Upper, lower, number & symbol"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="team-acc-designation">Designation</Label>
-                <Input
-                  id="team-acc-designation"
-                  value={createForm.designation}
-                  onChange={(e) => setCreateForm((f) => ({ ...f, designation: e.target.value }))}
-                  placeholder="Team Member"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="team-acc-department">Department</Label>
-                <Input
-                  id="team-acc-department"
-                  value={createForm.department}
-                  onChange={(e) => setCreateForm((f) => ({ ...f, department: e.target.value }))}
-                  placeholder="General"
-                />
-              </div>
-              {isSuperAdmin && (
-                <>
-                  <div className="space-y-2">
-                    <Label>Role</Label>
-                    <Select
-                      value={createForm.role}
-                      onValueChange={(v) => setCreateForm((f) => ({ ...f, role: v as Role }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="super_admin">Super Admin</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
-                        <SelectItem value="member">Team Member</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {createForm.role === "member" && admins.length > 0 && (
-                    <div className="space-y-2">
-                      <Label>Reporting admin</Label>
-                      <Select
-                        value={createForm.reportingAdminId}
-                        onValueChange={(v) => setCreateForm((f) => ({ ...f, reportingAdminId: v }))}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select an admin" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {admins.map((a) => (
-                            <SelectItem key={a.id} value={a.id}>
-                              {a.fullName}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setCreateOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={createBusy}>
-                {createBusy ? "Creating…" : "Create account"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />
       {people.length === 0 ? (
         <EmptyState title="No accounts yet" />
       ) : (
@@ -304,7 +125,20 @@ function TeamPage() {
           {people.map((u) => {
             const manager = state.users.find((x) => x.id === u.reportingAdminId);
             const editable = canManageAdmins || u.role === "member";
-            const canDelete = isSuperAdmin && u.id !== me?.id && u.id !== "u-hakeem";
+            const canEditPolicy =
+              isSuperAdmin ||
+              (me?.role === "admin" &&
+                (can("manage_users") || can("approve_leave")) &&
+                u.role === "member");
+            const canDelete =
+              u.id !== me?.id &&
+              u.id !== "u-hakeem" &&
+              u.id !== "u-superadmin" &&
+              (isSuperAdmin ||
+                (me?.role === "admin" &&
+                  can("manage_users") &&
+                  u.role === "member" &&
+                  u.reportingAdminId === me.id));
             return (
               <Card key={u.id} className="rounded-2xl">
                 <CardContent className="p-5">
@@ -328,6 +162,7 @@ function TeamPage() {
                           Reports to {manager?.fullName ?? "—"} · CL {u.casualBalance} · SL{" "}
                           {u.sickBalance}
                         </p>
+                        <UserPolicyBadge user={u} className="mt-1.5" />
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-2">
@@ -341,7 +176,7 @@ function TeamPage() {
                     </div>
                   </div>
 
-                  {(editable && u.id !== me?.id) || canDelete ? (
+                  {(editable && u.id !== me?.id) || canEditPolicy || canDelete ? (
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
                       <div className="flex flex-wrap items-center gap-3">
                         {editable && u.id !== me?.id && (
@@ -387,40 +222,57 @@ function TeamPage() {
                         )}
                       </div>
 
-                      {canDelete && (
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 px-2.5"
-                            >
-                              <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-                              Delete account
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>Delete Account</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                Are you sure you want to permanently delete the account for{" "}
-                                <span className="font-semibold text-foreground">{u.fullName}</span>?
-                                This action cannot be undone and will permanently revoke portal
-                                access.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancel</AlertDialogCancel>
-                              <AlertDialogAction
-                                onClick={() => void handleDelete(u.id, u.fullName)}
-                                className="bg-destructive hover:bg-destructive/90 text-white"
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {canEditPolicy && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setPolicyUser(u)}
+                            className="h-8 gap-1.5 px-2.5 text-xs"
+                          >
+                            <CalendarClock className="h-3.5 w-3.5 text-[#5B00A3]" />
+                            Edit Schedule & Policy
+                          </Button>
+                        )}
+
+                        {canDelete && (
+                          <AlertDialog>
+                            <AlertDialogTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 px-2.5"
                               >
-                                Delete Account
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      )}
+                                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                                Delete account
+                              </Button>
+                            </AlertDialogTrigger>
+                            <AlertDialogContent>
+                              <AlertDialogHeader>
+                                <AlertDialogTitle>Delete Account</AlertDialogTitle>
+                                <AlertDialogDescription>
+                                  Are you sure you want to permanently delete the account for{" "}
+                                  <span className="font-semibold text-foreground">
+                                    {u.fullName}
+                                  </span>
+                                  ? This action cannot be undone and will permanently revoke portal
+                                  access.
+                                </AlertDialogDescription>
+                              </AlertDialogHeader>
+                              <AlertDialogFooter>
+                                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                <AlertDialogAction
+                                  onClick={() => void handleDelete(u.id, u.fullName)}
+                                  className="bg-destructive hover:bg-destructive/90 text-white"
+                                >
+                                  Delete Account
+                                </AlertDialogAction>
+                              </AlertDialogFooter>
+                            </AlertDialogContent>
+                          </AlertDialog>
+                        )}
+                      </div>
                     </div>
                   ) : null}
                 </CardContent>
@@ -429,6 +281,14 @@ function TeamPage() {
           })}
         </div>
       )}
+
+      <EditUserPolicyDialog
+        user={policyUser}
+        open={Boolean(policyUser)}
+        onOpenChange={(open) => {
+          if (!open) setPolicyUser(null);
+        }}
+      />
     </>
   );
 }

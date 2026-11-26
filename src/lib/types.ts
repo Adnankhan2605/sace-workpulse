@@ -1,5 +1,19 @@
 export type Role = "super_admin" | "admin" | "member";
 
+export type WorkMode = "WFO" | "WFH" | "Hybrid";
+
+export const WORK_MODE_VALUES = ["WFO", "WFH", "Hybrid"] as const;
+
+export const WEEKDAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
 export interface User {
   id: string;
   fullName: string;
@@ -16,6 +30,12 @@ export interface User {
   avatarUrl?: string | null;
   casualBalance: number;
   sickBalance: number;
+  /** Optional/nullable work schedule & attendance policy fields. */
+  shiftStartTime?: string | null;
+  shiftEndTime?: string | null;
+  weekOffs?: string[] | null;
+  workMode?: WorkMode;
+  geoFenceMandatory?: boolean;
 }
 
 export type AttendanceStatus =

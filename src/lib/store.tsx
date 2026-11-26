@@ -13,11 +13,8 @@ import { DEFAULT_ADMIN_PERMS, dateKey } from "./seed";
 import { DEFAULT_PORTAL_BRANDING, applyPortalBrandingToDocument } from "./branding";
 import { DEFAULT_OFFICE_GEOFENCE, evaluateGeofence, requestCurrentPosition } from "./geofence";
 import { clearPortalClientStorage } from "./security";
-import { setClientSessionToken } from "./portal-session-client";
+import { getClientSessionToken, setClientSessionToken } from "./portal-session-client";
 import {
-  createAccount as createAccountFn,
-  saveAccount as saveAccountFn,
-  deleteAccount as deleteAccountFn,
   saveAdminPerms as saveAdminPermsFn,
   type CreateAccountInput,
   type SaveAccountInput,
@@ -659,8 +656,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     createAccount: async (input) => {
       try {
-        const res = await createAccountFn({ data: input });
-        if (res?.user) {
+        const token = getClientSessionToken();
+        const response = await fetch("/api/users", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { "x-sace-session": token } : {}),
+          },
+          body: JSON.stringify(input),
+        });
+        const res = (await response.json()) as {
+          ok?: boolean;
+          user?: User;
+          error?: string;
+        };
+        if (!response.ok || !res.ok) {
+          return { ok: false, error: res.error || "Could not create account." };
+        }
+        if (res.user) {
           const createdUser = res.user;
           setUsers((prev) =>
             prev.some((u) => u.id === createdUser.id)
@@ -675,7 +689,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }));
         }
         await loadScopedState();
-        return { ok: true, ...(res?.user ? { user: res.user } : {}) };
+        return { ok: true, ...(res.user ? { user: res.user } : {}) };
       } catch (err) {
         return { ok: false, error: errMessage(err, "Could not create account.") };
       }
@@ -683,7 +697,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     saveUser: async (input) => {
       try {
-        await saveAccountFn({ data: input });
+        const token = getClientSessionToken();
+        const response = await fetch(`/api/users/${encodeURIComponent(input.userId)}`, {
+          method: "PUT",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { "x-sace-session": token } : {}),
+          },
+          body: JSON.stringify(input),
+        });
+        const res = (await response.json()) as {
+          ok?: boolean;
+          user?: User;
+          error?: string;
+        };
+        if (!response.ok || !res.ok) {
+          return { ok: false, error: res.error || "Could not save profile changes." };
+        }
+        if (res.user) {
+          const updatedUser = res.user;
+          setUsers((prev) => prev.map((u) => (u.id === updatedUser.id ? updatedUser : u)));
+          setState((prev) => ({
+            ...prev,
+            users: prev.users.map((u) => (u.id === updatedUser.id ? updatedUser : u)),
+          }));
+        }
         await loadScopedState();
         return { ok: true };
       } catch (err) {
@@ -692,10 +731,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
 
     deleteAccount: async (userId: string) => {
-      if (!me || me.role !== "super_admin") {
-        return { ok: false, error: "Only a Super Admin can delete an account." };
+      if (!me || (me.role !== "super_admin" && me.role !== "admin")) {
+        return { ok: false, error: "Only a Super Admin or Admin can delete an account." };
       }
-      if (userId === me.id || userId === "u-hakeem") {
+      if (userId === me.id || userId === "u-hakeem" || userId === "u-superadmin") {
         return {
           ok: false,
           error: "You cannot delete your own or the primary Super Admin account.",
@@ -706,7 +745,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const name = target ? target.fullName : userId;
 
       try {
-        await deleteAccountFn({ data: { userId } });
+        const token = getClientSessionToken();
+        const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
+          method: "DELETE",
+          credentials: "include",
+          headers: {
+            ...(token ? { "x-sace-session": token } : {}),
+          },
+        });
+        const res = (await response.json()) as { ok?: boolean; error?: string };
+        if (!response.ok || !res.ok) {
+          return { ok: false, error: res.error || "Could not delete account." };
+        }
         await loadScopedState();
         log("account_deleted", `${name} (${userId}) was permanently deleted`);
         return { ok: true };

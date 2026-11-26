@@ -50,10 +50,10 @@ const AUDIO_EXTENSIONS = new Set([
 ]);
 
 function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env["GEMINI_API_KEY"];
+  const apiKey = (process.env["GEMINI_API_KEY"] || process.env["GOOGLE_API_KEY"] || "").trim();
   if (!apiKey) {
     throw new Error(
-      "GEMINI_API_KEY is not configured on the server. Please check Settings > Secrets to attach your API key.",
+      "GEMINI_API_KEY is not configured on the server. Open Settings > Secrets in Google AI Studio, add GEMINI_API_KEY with your Gemini API key, and try generating the MOM again.",
     );
   }
   return new GoogleGenAI({

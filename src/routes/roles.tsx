@@ -1,8 +1,14 @@
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, Minus, ShieldCheck, Trash2, UserPlus } from "lucide-react";
+import { CalendarClock, Check, Minus, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell, Initials, NoAccess, PageHeader, roleLabel } from "@/components/app-shell";
+import {
+  CreateUserForm,
+  EditUserPolicyDialog,
+  UserPolicyBadge,
+  type EditablePolicyUser,
+} from "@/components/user-account-dialogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -186,60 +192,6 @@ function RolesPage() {
 }
 
 function CreateAccount() {
-  const { state, createAccount, log } = useApp();
-  const [busy, setBusy] = React.useState(false);
-  const [form, setForm] = React.useState({
-    fullName: "",
-    email: "",
-    password: "",
-    designation: "",
-    department: "",
-    role: "member" as Role,
-    reportingAdminId: "",
-  });
-  const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }));
-  const admins = state.users.filter((u) => u.role !== "member");
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    const email = form.email.trim().toLowerCase();
-    if (state.users.some((u) => u.email.toLowerCase() === email)) {
-      toast.error("An account with that email already exists");
-      return;
-    }
-    if (!isStrongPassword(form.password)) {
-      toast.error(PASSWORD_POLICY_ERROR);
-      return;
-    }
-    setBusy(true);
-    const res = await createAccount({
-      fullName: form.fullName.trim(),
-      email,
-      password: form.password,
-      designation: form.designation.trim() || roleLabel(form.role),
-      department: form.department.trim() || "General",
-      role: form.role,
-      reportingAdminId: form.role === "member" ? form.reportingAdminId || null : null,
-      avatarColor: form.role === "member" ? "var(--brand-gold)" : "var(--brand-purple)",
-    });
-    setBusy(false);
-    if (!res.ok) {
-      toast.error(res.error ?? "Could not create the account");
-      return;
-    }
-    log("account_created", `${form.fullName.trim()} (${roleLabel(form.role)})`);
-    toast.success(`${form.fullName.trim()} can now sign in with ${email}`);
-    setForm({
-      ...form,
-      fullName: "",
-      email: "",
-      password: "",
-      designation: "",
-      department: "",
-      reportingAdminId: "",
-    });
-  }
-
   return (
     <Card className="rounded-2xl">
       <CardHeader>
@@ -247,71 +199,12 @@ function CreateAccount() {
           <UserPlus className="h-4 w-4 text-primary" /> Create an account
         </CardTitle>
         <CardDescription>
-          Set the email, password and role. Share the credentials with the person — they sign in on
-          the portal login screen.
+          Set the email, password and role. Work schedule, leave quotas and attendance policy are
+          optional — skip now and configure anytime later.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <form className="space-y-4" onSubmit={submit}>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {(
-              [
-                ["fullName", "Full name", "text"],
-                ["email", "Email", "email"],
-                ["password", "Password (min 12 chars)", "password"],
-                ["designation", "Designation", "text"],
-                ["department", "Department", "text"],
-              ] as const
-            ).map(([key, label, type]) => (
-              <div key={key} className="space-y-2">
-                <Label htmlFor={`acc-${key}`}>{label}</Label>
-                <Input
-                  id={`acc-${key}`}
-                  type={type}
-                  value={form[key]}
-                  onChange={(e) => set(key, e.target.value)}
-                  required={key === "fullName" || key === "email" || key === "password"}
-                />
-              </div>
-            ))}
-            <div className="space-y-2">
-              <Label>Role</Label>
-              <Select value={form.role} onValueChange={(v) => set("role", v)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="super_admin">Super Admin</SelectItem>
-                  <SelectItem value="admin">Admin</SelectItem>
-                  <SelectItem value="member">Team Member</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          {form.role === "member" && admins.length > 0 && (
-            <div className="space-y-2 sm:max-w-xs">
-              <Label>Reporting admin</Label>
-              <Select
-                value={form.reportingAdminId}
-                onValueChange={(v) => set("reportingAdminId", v)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select an admin" />
-                </SelectTrigger>
-                <SelectContent>
-                  {admins.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      {a.fullName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-          <Button type="submit" disabled={busy}>
-            {busy ? "Creating…" : "Create account"}
-          </Button>
-        </form>
+        <CreateUserForm idPrefix="roles-acc" />
       </CardContent>
     </Card>
   );
@@ -322,6 +215,7 @@ function AccountList() {
   const [resetTarget, setResetTarget] = React.useState<User | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = React.useState("");
   const [resetBusy, setResetBusy] = React.useState(false);
+  const [policyTarget, setPolicyTarget] = React.useState<EditablePolicyUser | null>(null);
   const apply = async (
     input: Parameters<typeof saveUser>[0],
     success: string,
@@ -371,6 +265,7 @@ function AccountList() {
                     )}
                   </p>
                   <p className="text-xs text-muted-foreground">{u.email}</p>
+                  <UserPolicyBadge user={u} className="mt-1" />
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -395,6 +290,15 @@ function AccountList() {
                     <SelectItem value="member">Team Member</SelectItem>
                   </SelectContent>
                 </Select>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPolicyTarget(u)}
+                  className="gap-1.5"
+                >
+                  <CalendarClock className="h-3.5 w-3.5 text-[#5B00A3]" />
+                  Schedule & Policy
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -517,6 +421,14 @@ function AccountList() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <EditUserPolicyDialog
+        user={policyTarget}
+        open={Boolean(policyTarget)}
+        onOpenChange={(open) => {
+          if (!open) setPolicyTarget(null);
+        }}
+      />
     </Card>
   );
 }

@@ -21,7 +21,12 @@ export const users = pgTable("users", {
   avatarColor: text("avatar_color").notNull().default("#8B5CF6"),
   avatarUrl: text("avatar_url"),
   casualBalance: integer("casual_balance").notNull().default(12),
-  sickBalance: integer("sick_balance").notNull().default(10),
+  sickBalance: integer("sick_balance").notNull().default(12),
+  shiftStartTime: text("shift_start_time"),
+  shiftEndTime: text("shift_end_time"),
+  weekOffs: jsonb("week_offs").$type<string[] | null>(),
+  workMode: text("work_mode").notNull().default("WFO"),
+  geoFenceMandatory: boolean("geo_fence_mandatory").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
@@ -182,5 +187,42 @@ export const userSmtpConfigs = pgTable("user_smtp_configs", {
   teamsLastVerifiedAt: text("teams_last_verified_at"),
   teamsLastTestStatus: text("teams_last_test_status"),
   teamsLastTestError: text("teams_last_test_error"),
+  whatsappMode: text("whatsapp_mode").notNull().default("cloud_api"),
+  whatsappPhoneNumberId: text("whatsapp_phone_number_id").notNull().default(""),
+  whatsappRecipientPhone: text("whatsapp_recipient_phone").notNull().default(""),
+  whatsappSecretEncrypted: text("whatsapp_secret_encrypted"),
+  whatsappEnabled: boolean("whatsapp_enabled").notNull().default(false),
+  whatsappLastVerifiedAt: text("whatsapp_last_verified_at"),
+  whatsappLastTestStatus: text("whatsapp_last_test_status"),
+  whatsappLastTestError: text("whatsapp_last_test_error"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const companies = pgTable("companies", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  code: text("code").notNull().default(""),
+  vertical: text("vertical").notNull().default(""),
+  description: text("description").notNull().default(""),
+  leadUserId: text("lead_user_id"),
+  memberIds: jsonb("member_ids").$type<string[]>().notNull().default([]),
+  active: boolean("active").notNull().default(true),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const initiatives = pgTable("initiatives", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  companyId: text("company_id"),
+  battalionId: text("battalion_id"),
+  leadUserId: text("lead_user_id"),
+  status: text("status").notNull().default("on_track"),
+  progress: integer("progress").notNull().default(0),
+  dueDate: text("due_date"),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

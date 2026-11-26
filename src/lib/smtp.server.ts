@@ -10,14 +10,19 @@ import { assertRateLimit } from "./rate-limit.server.ts";
 import {
   SaveSmtpConfigSchema,
   SaveTeamsConfigSchema,
+  SaveWhatsAppConfigSchema,
   TestSmtpConfigSchema,
   TestTeamsConfigSchema,
+  TestWhatsAppConfigSchema,
   type PublicSmtpConfig,
   type SaveSmtpConfigInput,
   type SaveTeamsConfigInput,
+  type SaveWhatsAppConfigInput,
   type SmtpEncryptionMode,
   type TestSmtpConfigInput,
   type TestTeamsConfigInput,
+  type TestWhatsAppConfigInput,
+  type WhatsAppIntegrationMode,
 } from "./smtp.schemas.ts";
 
 declare global {
@@ -162,10 +167,26 @@ function toPublicSmtpConfig(row?: typeof schema.userSmtpConfigs.$inferSelect): P
       teamsLastVerifiedAt: null,
       teamsLastTestStatus: null,
       teamsLastTestError: null,
+      hasWhatsAppConfig: false,
+      whatsappMode: "cloud_api",
+      whatsappPhoneNumberId: "",
+      whatsappRecipientPhone: "",
+      whatsappEnabled: false,
+      whatsappLastVerifiedAt: null,
+      whatsappLastTestStatus: null,
+      whatsappLastTestError: null,
       updatedAt: null,
     };
   }
   const hasSmtp = Boolean(row.host && row.encryptedPassword);
+  const whatsappMode: WhatsAppIntegrationMode =
+    row.whatsappMode === "webhook" ? "webhook" : "cloud_api";
+  const hasWhatsApp = Boolean(
+    row.whatsappSecretEncrypted &&
+    (whatsappMode === "webhook"
+      ? true
+      : Boolean(row.whatsappPhoneNumberId && row.whatsappRecipientPhone)),
+  );
   return {
     configured: hasSmtp,
     providerLabel: row.providerLabel || "Custom SMTP",
@@ -192,6 +213,17 @@ function toPublicSmtpConfig(row?: typeof schema.userSmtpConfigs.$inferSelect): P
         ? row.teamsLastTestStatus
         : null,
     teamsLastTestError: row.teamsLastTestError ?? null,
+    hasWhatsAppConfig: hasWhatsApp,
+    whatsappMode,
+    whatsappPhoneNumberId: row.whatsappPhoneNumberId ?? "",
+    whatsappRecipientPhone: row.whatsappRecipientPhone ?? "",
+    whatsappEnabled: Boolean(row.whatsappEnabled),
+    whatsappLastVerifiedAt: row.whatsappLastVerifiedAt ?? null,
+    whatsappLastTestStatus:
+      row.whatsappLastTestStatus === "verified" || row.whatsappLastTestStatus === "failed"
+        ? row.whatsappLastTestStatus
+        : null,
+    whatsappLastTestError: row.whatsappLastTestError ?? null,
     updatedAt: row.updatedAt,
   };
 }
@@ -479,7 +511,7 @@ export async function deleteMySmtpConfigRecord(
     return { ok: true as const, config: toPublicSmtpConfig(undefined) };
   }
 
-  if (existing.teamsWebhookEncrypted) {
+  if (existing.teamsWebhookEncrypted || existing.whatsappSecretEncrypted) {
     const now = new Date().toISOString();
     await db
       .update(schema.userSmtpConfigs)
@@ -742,7 +774,7 @@ export async function deleteMyTeamsConfigRecord(
     return { ok: true as const, config: toPublicSmtpConfig(undefined) };
   }
 
-  if (existing.host && existing.encryptedPassword) {
+  if ((existing.host && existing.encryptedPassword) || existing.whatsappSecretEncrypted) {
     const now = new Date().toISOString();
     await db
       .update(schema.userSmtpConfigs)
@@ -752,6 +784,376 @@ export async function deleteMyTeamsConfigRecord(
         teamsLastVerifiedAt: null,
         teamsLastTestStatus: null,
         teamsLastTestError: null,
+        updatedAt: now,
+      })
+      .where(eq(schema.userSmtpConfigs.userId, userId));
+    const updated = await db
+      .select()
+      .from(schema.userSmtpConfigs)
+      .where(eq(schema.userSmtpConfigs.userId, userId))
+      .limit(1);
+    return { ok: true as const, config: toPublicSmtpConfig(updated[0]) };
+  }
+
+  await db.delete(schema.userSmtpConfigs).where(eq(schema.userSmtpConfigs.userId, userId));
+  return { ok: true as const, config: toPublicSmtpConfig(undefined) };
+}
+
+function normalizeWhatsAppDigits(rawPhone: string): string {
+  return rawPhone.replace(/\D/g, "");
+}
+
+async function sendWhatsAppMessage(params: {
+  mode: WhatsAppIntegrationMode;
+  phoneNumberId?: string;
+  recipientPhone?: string;
+  secret: string;
+  title: string;
+  text: string;
+}): Promise<void> {
+  const messageBody = `${params.title}\n\n${params.text}`.trim().slice(0, 4096);
+
+  if (params.mode === "webhook") {
+    const safeUrl = await assertSafeTeamsWebhookUrl(params.secret);
+    const res = await fetch(safeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        channel: "whatsapp",
+        title: params.title,
+        text: params.text,
+        message: messageBody,
+        ...(params.recipientPhone ? { to: params.recipientPhone } : {}),
+        sentAt: new Date().toISOString(),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      const body = (await res.text().catch(() => "")).slice(0, 200);
+      throw new Error(`WhatsApp webhook returned HTTP ${res.status}${body ? `: ${body}` : ""}`);
+    }
+    return;
+  }
+
+  const phoneNumberId = (params.phoneNumberId ?? "").trim();
+  const toDigits = normalizeWhatsAppDigits(params.recipientPhone ?? "");
+  if (!phoneNumberId || !/^[0-9]+$/.test(phoneNumberId)) {
+    throw new Error("Enter a valid Meta WhatsApp Phone Number ID.");
+  }
+  if (!toDigits || toDigits.length < 7) {
+    throw new Error(
+      "Enter a valid recipient WhatsApp phone number including country code (e.g. +919876543210).",
+    );
+  }
+
+  const res = await fetch(
+    `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.secret.trim()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: toDigits,
+        type: "text",
+        text: {
+          preview_url: false,
+          body: messageBody,
+        },
+      }),
+      signal: AbortSignal.timeout(12_000),
+    },
+  );
+
+  if (!res.ok) {
+    const rawText = await res.text().catch(() => "");
+    let detail = rawText.slice(0, 240);
+    try {
+      const parsed = JSON.parse(rawText) as { error?: { message?: string } };
+      if (parsed?.error?.message) {
+        detail = parsed.error.message;
+      }
+    } catch {
+      /* ignore JSON parse error */
+    }
+    throw new Error(
+      `WhatsApp Cloud API returned HTTP ${res.status}: ${detail || "Request failed."}`,
+    );
+  }
+}
+
+export async function saveMyWhatsAppConfigRecord(
+  userId: string,
+  rawInput: SaveWhatsAppConfigInput | unknown,
+): Promise<{ ok: true; config: PublicSmtpConfig }> {
+  assertRateLimit(`whatsapp-save:${userId}`, { limit: 25, windowMs: 60_000 });
+  const data = SaveWhatsAppConfigSchema.parse(rawInput);
+  await ensurePortalInitialized();
+
+  const existingRows = await db
+    .select()
+    .from(schema.userSmtpConfigs)
+    .where(eq(schema.userSmtpConfigs.userId, userId))
+    .limit(1);
+  const existing = existingRows[0];
+
+  const mode: WhatsAppIntegrationMode = data.mode;
+  const phoneNumberId = data.phoneNumberId.trim();
+  const recipientPhone = data.recipientPhone.trim();
+
+  if (mode === "cloud_api") {
+    if (!phoneNumberId || !/^[0-9]+$/.test(phoneNumberId)) {
+      throw new Error("Enter a valid numeric Meta WhatsApp Phone Number ID.");
+    }
+    if (!recipientPhone || normalizeWhatsAppDigits(recipientPhone).length < 7) {
+      throw new Error("Enter a recipient WhatsApp phone number with country code.");
+    }
+  }
+
+  let whatsappSecretEncrypted: string | null = existing?.whatsappSecretEncrypted ?? null;
+  let changedSecret = false;
+
+  if (mode === "webhook") {
+    const incomingUrl = (data.webhookUrl ?? "").trim();
+    if (incomingUrl) {
+      const safeUrl = await assertSafeTeamsWebhookUrl(incomingUrl);
+      whatsappSecretEncrypted = encryptSmtpPassword(safeUrl);
+      changedSecret = true;
+    } else if (!whatsappSecretEncrypted || existing?.whatsappMode !== "webhook") {
+      throw new Error("Enter your WhatsApp webhook URL before saving.");
+    }
+  } else {
+    const incomingToken = (data.accessToken ?? "").trim();
+    if (incomingToken) {
+      whatsappSecretEncrypted = encryptSmtpPassword(incomingToken);
+      changedSecret = true;
+    } else if (!whatsappSecretEncrypted || existing?.whatsappMode !== "cloud_api") {
+      throw new Error("Enter your Meta WhatsApp Cloud API Access Token before saving.");
+    }
+  }
+
+  const now = new Date().toISOString();
+  const changedConfig =
+    changedSecret ||
+    !existing ||
+    existing.whatsappMode !== mode ||
+    existing.whatsappPhoneNumberId !== phoneNumberId ||
+    existing.whatsappRecipientPhone !== recipientPhone;
+
+  if (existing) {
+    await db
+      .update(schema.userSmtpConfigs)
+      .set({
+        whatsappMode: mode,
+        whatsappPhoneNumberId: mode === "cloud_api" ? phoneNumberId : "",
+        whatsappRecipientPhone: recipientPhone,
+        whatsappSecretEncrypted,
+        whatsappEnabled: data.enabled,
+        ...(changedConfig
+          ? {
+              whatsappLastVerifiedAt: null,
+              whatsappLastTestStatus: null,
+              whatsappLastTestError: null,
+            }
+          : {}),
+        updatedAt: now,
+      })
+      .where(eq(schema.userSmtpConfigs.userId, userId));
+  } else {
+    await db.insert(schema.userSmtpConfigs).values({
+      userId,
+      providerLabel: "Custom SMTP",
+      host: "",
+      port: 587,
+      encryption: "starttls",
+      username: "",
+      encryptedPassword: "",
+      fromName: "",
+      fromEmail: "",
+      replyTo: null,
+      enabled: true,
+      lastVerifiedAt: null,
+      lastTestStatus: null,
+      lastTestError: null,
+      teamsWebhookEncrypted: null,
+      teamsEnabled: false,
+      teamsLastVerifiedAt: null,
+      teamsLastTestStatus: null,
+      teamsLastTestError: null,
+      whatsappMode: mode,
+      whatsappPhoneNumberId: mode === "cloud_api" ? phoneNumberId : "",
+      whatsappRecipientPhone: recipientPhone,
+      whatsappSecretEncrypted,
+      whatsappEnabled: data.enabled,
+      whatsappLastVerifiedAt: null,
+      whatsappLastTestStatus: null,
+      whatsappLastTestError: null,
+      updatedAt: now,
+    });
+  }
+
+  const savedRows = await db
+    .select()
+    .from(schema.userSmtpConfigs)
+    .where(eq(schema.userSmtpConfigs.userId, userId))
+    .limit(1);
+  return { ok: true as const, config: toPublicSmtpConfig(savedRows[0]) };
+}
+
+export async function testMyWhatsAppConfigRecord(
+  userId: string,
+  rawInput: TestWhatsAppConfigInput | unknown,
+): Promise<{ ok: boolean; message: string; config?: PublicSmtpConfig }> {
+  const now = new Date().toISOString();
+  let existing: typeof schema.userSmtpConfigs.$inferSelect | undefined;
+  try {
+    assertRateLimit(`whatsapp-test:${userId}`, { limit: 15, windowMs: 5 * 60_000 });
+    const data = TestWhatsAppConfigSchema.parse(rawInput);
+    await ensurePortalInitialized();
+
+    const existingRows = await db
+      .select()
+      .from(schema.userSmtpConfigs)
+      .where(eq(schema.userSmtpConfigs.userId, userId))
+      .limit(1);
+    existing = existingRows[0];
+
+    const mode: WhatsAppIntegrationMode = data.mode;
+    const phoneNumberId = data.phoneNumberId.trim() || existing?.whatsappPhoneNumberId || "";
+    const recipientPhone = data.recipientPhone.trim() || existing?.whatsappRecipientPhone || "";
+
+    let secret = "";
+    if (mode === "webhook") {
+      const incomingUrl = (data.webhookUrl ?? "").trim();
+      if (incomingUrl) {
+        secret = await assertSafeTeamsWebhookUrl(incomingUrl);
+      } else if (existing?.whatsappSecretEncrypted && existing.whatsappMode === "webhook") {
+        try {
+          secret = decryptSmtpPassword(existing.whatsappSecretEncrypted);
+        } catch {
+          throw new Error(
+            "Your saved WhatsApp webhook URL could not be decrypted after a server restart. Re-enter it and save again.",
+          );
+        }
+      } else {
+        throw new Error("Enter your WhatsApp webhook URL before testing.");
+      }
+    } else {
+      const incomingToken = (data.accessToken ?? "").trim();
+      if (incomingToken) {
+        secret = incomingToken;
+      } else if (existing?.whatsappSecretEncrypted && existing.whatsappMode === "cloud_api") {
+        try {
+          secret = decryptSmtpPassword(existing.whatsappSecretEncrypted);
+        } catch {
+          throw new Error(
+            "Your saved WhatsApp Access Token could not be decrypted after a server restart. Re-enter it and save again.",
+          );
+        }
+      } else {
+        throw new Error("Enter your Meta WhatsApp Access Token before testing.");
+      }
+    }
+
+    await sendWhatsAppMessage({
+      mode,
+      phoneNumberId,
+      recipientPhone,
+      secret,
+      title: "SACE Workpulse — WhatsApp Integration Test",
+      text: `Your WhatsApp alert integration is working properly.\n\nSent at ${now}.`,
+    });
+
+    if (existing) {
+      await db
+        .update(schema.userSmtpConfigs)
+        .set({
+          whatsappLastVerifiedAt: now,
+          whatsappLastTestStatus: "verified",
+          whatsappLastTestError: null,
+          updatedAt: now,
+        })
+        .where(eq(schema.userSmtpConfigs.userId, userId));
+    }
+
+    const updatedRows = await db
+      .select()
+      .from(schema.userSmtpConfigs)
+      .where(eq(schema.userSmtpConfigs.userId, userId))
+      .limit(1);
+
+    return {
+      ok: true,
+      message: "Test WhatsApp notification sent successfully.",
+      ...(updatedRows[0] ? { config: toPublicSmtpConfig(updatedRows[0]) } : {}),
+    };
+  } catch (err) {
+    const cleanErr = err instanceof Error ? err.message.slice(0, 300) : "WhatsApp test failed.";
+    if (existing) {
+      try {
+        await db
+          .update(schema.userSmtpConfigs)
+          .set({
+            whatsappLastTestStatus: "failed",
+            whatsappLastTestError: cleanErr,
+            updatedAt: now,
+          })
+          .where(eq(schema.userSmtpConfigs.userId, userId));
+      } catch {
+        // Ignore secondary persistence error
+      }
+    }
+    let latestConfig: PublicSmtpConfig | undefined;
+    if (existing) {
+      try {
+        const updatedRows = await db
+          .select()
+          .from(schema.userSmtpConfigs)
+          .where(eq(schema.userSmtpConfigs.userId, userId))
+          .limit(1);
+        if (updatedRows[0]) latestConfig = toPublicSmtpConfig(updatedRows[0]);
+      } catch {
+        // Ignore secondary read error
+      }
+    }
+    return {
+      ok: false,
+      message: cleanErr,
+      ...(latestConfig ? { config: latestConfig } : {}),
+    };
+  }
+}
+
+export async function deleteMyWhatsAppConfigRecord(
+  userId: string,
+): Promise<{ ok: true; config: PublicSmtpConfig }> {
+  await ensurePortalInitialized();
+  const rows = await db
+    .select()
+    .from(schema.userSmtpConfigs)
+    .where(eq(schema.userSmtpConfigs.userId, userId))
+    .limit(1);
+  const existing = rows[0];
+  if (!existing) {
+    return { ok: true as const, config: toPublicSmtpConfig(undefined) };
+  }
+
+  if ((existing.host && existing.encryptedPassword) || existing.teamsWebhookEncrypted) {
+    const now = new Date().toISOString();
+    await db
+      .update(schema.userSmtpConfigs)
+      .set({
+        whatsappMode: "cloud_api",
+        whatsappPhoneNumberId: "",
+        whatsappRecipientPhone: "",
+        whatsappSecretEncrypted: null,
+        whatsappEnabled: false,
+        whatsappLastVerifiedAt: null,
+        whatsappLastTestStatus: null,
+        whatsappLastTestError: null,
         updatedAt: now,
       })
       .where(eq(schema.userSmtpConfigs.userId, userId));
@@ -818,7 +1220,8 @@ export async function sendPortalMailAndTeamsAlert(options: {
   teamsTitle?: string;
   teamsText?: string;
   notifySuperAdminTeams?: boolean;
-}): Promise<{ emailSent: boolean; teamsSent: boolean }> {
+  notifySuperAdminWhatsApp?: boolean;
+}): Promise<{ emailSent: boolean; teamsSent: boolean; whatsappSent: boolean }> {
   await ensurePortalInitialized();
   const [smtpRows, userRows] = await Promise.all([
     db.select().from(schema.userSmtpConfigs),
@@ -905,5 +1308,36 @@ export async function sendPortalMailAndTeamsAlert(options: {
     }
   }
 
-  return { emailSent, teamsSent };
+  let whatsappSent = false;
+  const shouldNotifyWhatsApp =
+    options.notifySuperAdminWhatsApp ?? options.notifySuperAdminTeams !== false;
+  if (shouldNotifyWhatsApp) {
+    const whatsappTargets = smtpRows.filter(
+      (c) =>
+        c.whatsappEnabled &&
+        Boolean(c.whatsappSecretEncrypted) &&
+        (userRoleById.get(c.userId) === "super_admin" || userRoleById.get(c.userId) === "admin"),
+    );
+    for (const target of whatsappTargets) {
+      if (!target.whatsappSecretEncrypted) continue;
+      try {
+        const secret = decryptSmtpPassword(target.whatsappSecretEncrypted);
+        const mode: WhatsAppIntegrationMode =
+          target.whatsappMode === "webhook" ? "webhook" : "cloud_api";
+        await sendWhatsAppMessage({
+          mode,
+          phoneNumberId: target.whatsappPhoneNumberId,
+          recipientPhone: target.whatsappRecipientPhone,
+          secret,
+          title: options.teamsTitle ?? options.subject,
+          text: options.text,
+        });
+        whatsappSent = true;
+      } catch (err) {
+        console.error("[SACE WhatsApp Alert] Failed to send WhatsApp notification:", err);
+      }
+    }
+  }
+
+  return { emailSent, teamsSent, whatsappSent };
 }

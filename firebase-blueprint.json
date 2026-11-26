@@ -4,112 +4,91 @@
       "collection": "users",
       "fields": {
         "id": { "type": "string" },
-        "name": { "type": "string" },
+        "fullName": { "type": "string" },
+        "username": { "type": "string" },
         "email": { "type": "string" },
-        "role": { "type": "string" },
-        "department": { "type": "string" },
+        "password": { "type": "string" },
         "designation": { "type": "string" },
-        "phone": { "type": "string" },
+        "department": { "type": "string" },
+        "role": { "type": "string" },
+        "reportingAdminId": { "type": "string" },
         "active": { "type": "boolean" },
-        "joinedAt": { "type": "string" },
-        "avatar": { "type": "string" }
+        "dailyVision": { "type": "string" },
+        "avatarColor": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "casualBalance": { "type": "number" },
+        "sickBalance": { "type": "number" },
+        "shiftStartTime": { "type": "string" },
+        "shiftEndTime": { "type": "string" },
+        "weekOffs": { "type": "array" },
+        "workMode": { "type": "string" },
+        "geoFenceMandatory": { "type": "boolean" },
+        "createdAt": { "type": "string" }
       }
     },
-    "Task": {
-      "collection": "tasks",
+    "PortalState": {
+      "collection": "portal_state",
       "fields": {
         "id": { "type": "string" },
-        "title": { "type": "string" },
+        "data": { "type": "map" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "UserSmtpConfig": {
+      "collection": "user_smtp_configs",
+      "fields": {
+        "userId": { "type": "string" },
+        "providerLabel": { "type": "string" },
+        "host": { "type": "string" },
+        "port": { "type": "number" },
+        "encryption": { "type": "string" },
+        "username": { "type": "string" },
+        "encryptedPassword": { "type": "string" },
+        "fromName": { "type": "string" },
+        "fromEmail": { "type": "string" },
+        "replyTo": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "teamsWebhookEncrypted": { "type": "string" },
+        "teamsEnabled": { "type": "boolean" },
+        "whatsappMode": { "type": "string" },
+        "whatsappPhoneNumberId": { "type": "string" },
+        "whatsappRecipientPhone": { "type": "string" },
+        "whatsappSecretEncrypted": { "type": "string" },
+        "whatsappEnabled": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "Company": {
+      "collection": "companies",
+      "fields": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "vertical": { "type": "string" },
         "description": { "type": "string" },
-        "assigneeId": { "type": "string" },
-        "assignerId": { "type": "string" },
-        "cadence": { "type": "string" },
-        "priority": { "type": "string" },
-        "status": { "type": "string" },
-        "dueDate": { "type": "string" },
-        "startDate": { "type": "string" },
-        "requiredProof": { "type": "string" },
-        "proofs": { "type": "array" },
-        "createdAt": { "type": "string" },
-        "completedAt": { "type": "string" }
-      }
-    },
-    "AttendanceRecord": {
-      "collection": "attendance",
-      "fields": {
-        "id": { "type": "string" },
-        "userId": { "type": "string" },
-        "date": { "type": "string" },
-        "punchIn": { "type": "string" },
-        "punchOut": { "type": "string" },
-        "hours": { "type": "number" },
-        "status": { "type": "string" },
-        "shift": { "type": "string" },
-        "note": { "type": "string" }
-      }
-    },
-    "EodReport": {
-      "collection": "eod_reports",
-      "fields": {
-        "id": { "type": "string" },
-        "userId": { "type": "string" },
-        "date": { "type": "string" },
-        "summary": { "type": "string" },
-        "tasksCompleted": { "type": "array" },
-        "blockers": { "type": "string" },
-        "hoursWorked": { "type": "number" },
-        "submittedAt": { "type": "string" }
-      }
-    },
-    "LeaveRequest": {
-      "collection": "leaves",
-      "fields": {
-        "id": { "type": "string" },
-        "userId": { "type": "string" },
-        "startDate": { "type": "string" },
-        "endDate": { "type": "string" },
-        "reason": { "type": "string" },
-        "type": { "type": "string" },
-        "status": { "type": "string" },
-        "appliedAt": { "type": "string" },
-        "reviewedBy": { "type": "string" },
-        "reviewedAt": { "type": "string" }
-      }
-    },
-    "SupportTicket": {
-      "collection": "tickets",
-      "fields": {
-        "id": { "type": "string" },
-        "userId": { "type": "string" },
-        "title": { "type": "string" },
-        "category": { "type": "string" },
-        "priority": { "type": "string" },
-        "status": { "type": "string" },
-        "description": { "type": "string" },
-        "createdAt": { "type": "string" },
-        "resolvedAt": { "type": "string" }
-      }
-    },
-    "Conversation": {
-      "collection": "conversations",
-      "fields": {
-        "id": { "type": "string" },
-        "type": { "type": "string" },
-        "title": { "type": "string" },
-        "participantIds": { "type": "array" },
+        "leadUserId": { "type": "string" },
+        "memberIds": { "type": "array" },
+        "active": { "type": "boolean" },
         "createdBy": { "type": "string" },
         "createdAt": { "type": "string" },
-        "lastMessageAt": { "type": "string" }
+        "updatedAt": { "type": "string" }
       }
     },
-    "ChatMessage": {
-      "collection": "messages",
+    "Initiative": {
+      "collection": "initiatives",
       "fields": {
         "id": { "type": "string" },
-        "conversationId": { "type": "string" },
-        "senderId": { "type": "string" },
-        "content": { "type": "string" },
-        "timestamp": { "type": "string" }
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "companyId": { "type": "string" },
+        "battalionId": { "type": "string" },
+        "leadUserId": { "type": "string" },
+        "status": { "type": "string" },
+        "progress": { "type": "number" },
+        "dueDate": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
       }
     }
   }

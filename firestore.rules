@@ -1,6 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // All database reads and writes are executed server-side via firebase-admin
+    // after session and role verification (Super Admin / Admin / Team Member).
+    // Direct client-side access is denied to protect password hashes and encrypted SMTP secrets.
     match /{document=**} {
       allow read, write: if false;
     }

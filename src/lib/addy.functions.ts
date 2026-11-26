@@ -37,8 +37,8 @@ export const askAddy = createServerFn({ method: "POST" })
       message: "You are sending messages to Addy too quickly. Please wait a minute.",
     });
 
-    const geminiKey = process.env["GEMINI_API_KEY"];
-    const lovableKey = process.env["LOVABLE_API_KEY"];
+    const geminiKey = (process.env["GEMINI_API_KEY"] || process.env["GOOGLE_API_KEY"] || "").trim();
+    const lovableKey = (process.env["LOVABLE_API_KEY"] || "").trim();
 
     // Derive user identity strictly from verified server session; treat UI route hint as untrusted metadata.
     const safePageHint = (data.context ?? "").replace(/[^\w\s/\-.:]/g, "").slice(0, 80);

@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { cert, getApps, initializeApp, type ServiceAccount } from "firebase-admin/app";
+import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import { getTableColumns, type SQL, type Table } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
@@ -7,13 +9,184 @@ import * as schema from "./schema.ts";
 
 declare global {
   var _postgresPool: Pool | undefined;
+  var _firestoreDb: Firestore | null | undefined;
+  var _firestoreHydratedPromise: Promise<void> | undefined;
+  var _firestoreReady: boolean | undefined;
   var _mockDbTables: Map<string, Map<string, Record<string, unknown>>> | undefined;
   var _mockDbLoadedMtimeMs: number | undefined;
   var _mockDbWarned: boolean | undefined;
 }
 
+const FIRESTORE_COLLECTIONS = [
+  "users",
+  "portal_state",
+  "user_smtp_configs",
+  "companies",
+  "initiatives",
+] as const;
+
 export function hasPostgresConfig(): boolean {
   return Boolean(process.env["SQL_HOST"] && process.env["SQL_DB_NAME"] && process.env["SQL_USER"]);
+}
+
+function hasFirebaseAdminCredentials(): boolean {
+  return Boolean(
+    process.env["FIREBASE_SERVICE_ACCOUNT_JSON"]?.trim() ||
+    process.env["GOOGLE_APPLICATION_CREDENTIALS"]?.trim(),
+  );
+}
+
+function getFirestoreInstance(): Firestore | null {
+  if (process.env["SACE_DB_FILE"]) {
+    // Isolated local file test override
+    return null;
+  }
+  if (global._firestoreDb !== undefined) {
+    return global._firestoreDb;
+  }
+  if (!hasFirebaseAdminCredentials()) {
+    global._firestoreDb = null;
+    return null;
+  }
+  try {
+    const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
+    if (!fs.existsSync(configPath)) {
+      global._firestoreDb = null;
+      return null;
+    }
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      projectId?: string;
+      firestoreDatabaseId?: string;
+    };
+    if (!raw.projectId) {
+      global._firestoreDb = null;
+      return null;
+    }
+    const serviceAccountRaw = process.env["FIREBASE_SERVICE_ACCOUNT_JSON"]?.trim();
+    const existingApp = getApps()[0];
+    const app =
+      existingApp ??
+      initializeApp(
+        serviceAccountRaw
+          ? {
+              projectId: raw.projectId,
+              credential: cert(JSON.parse(serviceAccountRaw) as ServiceAccount),
+            }
+          : { projectId: raw.projectId },
+      );
+    global._firestoreDb = raw.firestoreDatabaseId
+      ? getFirestore(app, raw.firestoreDatabaseId)
+      : getFirestore(app);
+    global._firestoreDb.settings({ ignoreUndefinedProperties: true });
+    return global._firestoreDb;
+  } catch {
+    global._firestoreDb = null;
+    return null;
+  }
+}
+
+function sanitizeForFirestore(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(sanitizeForFirestore);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v !== undefined) {
+        out[k] = sanitizeForFirestore(v);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+async function ensureFirestoreHydrated(
+  store: Map<string, Map<string, Record<string, unknown>>>,
+): Promise<void> {
+  const firestore = getFirestoreInstance();
+  if (!firestore) return;
+  if (!global._firestoreHydratedPromise) {
+    global._firestoreHydratedPromise = (async () => {
+      try {
+        let hydratedFromCloud = false;
+        for (const colName of FIRESTORE_COLLECTIONS) {
+          const snap = await firestore.collection(colName).get();
+          let tableMap = store.get(colName);
+          if (!tableMap) {
+            tableMap = new Map();
+            store.set(colName, tableMap);
+          }
+          if (!snap.empty) {
+            for (const docSnap of snap.docs) {
+              const data = docSnap.data() as Record<string, unknown>;
+              tableMap.set(docSnap.id, data);
+              hydratedFromCloud = true;
+            }
+          } else if (tableMap.size > 0) {
+            const batch = firestore.batch();
+            for (const [docId, row] of tableMap.entries()) {
+              batch.set(
+                firestore.collection(colName).doc(docId),
+                sanitizeForFirestore(row) as Record<string, unknown>,
+                { merge: true },
+              );
+            }
+            await batch.commit();
+          }
+        }
+        global._firestoreReady = true;
+        if (hydratedFromCloud) {
+          flushStoreToDisk(store);
+        }
+      } catch {
+        // Disable Firestore Admin sync if container IAM lacks cross-project permission
+        global._firestoreDb = null;
+        global._firestoreReady = false;
+      }
+    })();
+  }
+  await global._firestoreHydratedPromise;
+}
+
+async function persistRowsToFirestore(
+  tableName: string,
+  rows: Array<{ id: string; row: Record<string, unknown> }>,
+): Promise<void> {
+  if (rows.length === 0) return;
+  const firestore = getFirestoreInstance();
+  if (!firestore) return;
+  try {
+    const batch = firestore.batch();
+    for (const item of rows) {
+      batch.set(
+        firestore.collection(tableName).doc(item.id),
+        sanitizeForFirestore(item.row) as Record<string, unknown>,
+        { merge: true },
+      );
+    }
+    await batch.commit();
+    global._firestoreReady = true;
+  } catch {
+    global._firestoreDb = null;
+    global._firestoreReady = false;
+  }
+}
+
+async function deleteRowsFromFirestore(tableName: string, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const firestore = getFirestoreInstance();
+  if (!firestore) return;
+  try {
+    const batch = firestore.batch();
+    for (const id of ids) {
+      batch.delete(firestore.collection(tableName).doc(id));
+    }
+    await batch.commit();
+  } catch {
+    global._firestoreDb = null;
+    global._firestoreReady = false;
+  }
 }
 
 export const createPool = () => {
@@ -283,8 +456,11 @@ function projectRow(
 function createPersistentFallbackDb() {
   if (!global._mockDbWarned) {
     global._mockDbWarned = true;
+    const firestore = getFirestoreInstance();
     console.info(
-      `[SACE DB] PostgreSQL not configured — using persistent file-backed database at ${getPersistentFallbackPath()}.`,
+      firestore
+        ? `[SACE DB] Connected to Cloud Firestore + persistent local store at ${getPersistentFallbackPath()}.`
+        : `[SACE DB] Using persistent file-backed database at ${getPersistentFallbackPath()}.`,
     );
   }
 
@@ -297,6 +473,8 @@ function createPersistentFallbackDb() {
           let limitCount: number | undefined;
 
           const run = async () => {
+            const store = getMockStore();
+            await ensureFirestoreHydrated(store);
             const rows = Array.from(getTableRows(table).values());
             const filtered = whereExpr
               ? rows.filter((r) => matchesWhereExpr(r, whereExpr, sqlToJs))
@@ -342,8 +520,10 @@ function createPersistentFallbackDb() {
 
           const run = async () => {
             const store = getMockStore();
+            await ensureFirestoreHydrated(store);
             const tableMap = getTableRows(table);
             const affected: Record<string, unknown>[] = [];
+            const firestoreUpserts: Array<{ id: string; row: Record<string, unknown> }> = [];
             let mutated = false;
 
             for (const item of items) {
@@ -428,6 +608,7 @@ function createPersistentFallbackDb() {
                   const merged = { ...tableMap.get(conflictKey), ...updateSet };
                   tableMap.set(conflictKey, merged);
                   affected.push(merged);
+                  firestoreUpserts.push({ id: conflictKey, row: merged });
                   mutated = true;
                   continue;
                 }
@@ -435,11 +616,13 @@ function createPersistentFallbackDb() {
 
               tableMap.set(id, row);
               affected.push(row);
+              firestoreUpserts.push({ id, row });
               mutated = true;
             }
 
             if (mutated) {
               flushStoreToDisk(store);
+              await persistRowsToFirestore(tableName, firestoreUpserts);
             }
             if (returnSelection === null) {
               return [];
@@ -478,25 +661,30 @@ function createPersistentFallbackDb() {
 
     update(table: Table) {
       const sqlToJs = buildSqlToJsColumnMap(table);
+      const tableName = getTableName(table);
       return {
         set(patch: Record<string, unknown>) {
           let whereExpr: unknown;
           let returnSelection: Record<string, unknown> | undefined | null = null;
           const run = async () => {
             const store = getMockStore();
+            await ensureFirestoreHydrated(store);
             const tableMap = getTableRows(table);
             const affected: Record<string, unknown>[] = [];
+            const firestoreUpserts: Array<{ id: string; row: Record<string, unknown> }> = [];
             let mutated = false;
             for (const [id, row] of tableMap.entries()) {
               if (!whereExpr || matchesWhereExpr(row, whereExpr, sqlToJs)) {
                 const updated = { ...row, ...patch };
                 tableMap.set(id, updated);
                 affected.push(updated);
+                firestoreUpserts.push({ id, row: updated });
                 mutated = true;
               }
             }
             if (mutated) {
               flushStoreToDisk(store);
+              await persistRowsToFirestore(tableName, firestoreUpserts);
             }
             if (returnSelection === null) {
               return [];
@@ -526,19 +714,24 @@ function createPersistentFallbackDb() {
 
     delete(table: Table) {
       const sqlToJs = buildSqlToJsColumnMap(table);
+      const tableName = getTableName(table);
       let whereExpr: unknown;
       const run = async () => {
         const store = getMockStore();
+        await ensureFirestoreHydrated(store);
         const tableMap = getTableRows(table);
+        const deletedIds: string[] = [];
         let mutated = false;
         for (const [id, row] of tableMap.entries()) {
           if (!whereExpr || matchesWhereExpr(row, whereExpr, sqlToJs)) {
             tableMap.delete(id);
+            deletedIds.push(id);
             mutated = true;
           }
         }
         if (mutated) {
           flushStoreToDisk(store);
+          await deleteRowsFromFirestore(tableName, deletedIds);
         }
         return [];
       };
@@ -566,3 +759,34 @@ function createPersistentFallbackDb() {
 const pool = createPool();
 export const db = pool ? drizzle(pool, { schema }) : createPersistentFallbackDb();
 export { pool };
+
+export async function assertPersistentStorageReady(): Promise<void> {
+  if (hasPostgresConfig()) {
+    if (!pool) {
+      throw new Error(
+        "Database error: PostgreSQL configuration is incomplete. Unable to persist account.",
+      );
+    }
+    try {
+      await pool.query("SELECT 1");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "Connection refused";
+      throw new Error(
+        `Database error: Persistent SQL database is unreachable (${detail}). Account creation aborted to prevent data loss.`,
+      );
+    }
+    return;
+  }
+
+  const filePath = getPersistentFallbackPath();
+  const dir = path.dirname(filePath);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.R_OK | fs.constants.W_OK);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "Storage directory is not writable";
+    throw new Error(
+      `Database error: Persistent database storage at ${filePath} is unavailable (${detail}). Account creation aborted to prevent data loss.`,
+    );
+  }
+}

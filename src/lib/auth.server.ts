@@ -144,6 +144,8 @@ export function clearSessionCookie(): void {
 }
 
 export function toPublicUser(row: typeof schema.users.$inferSelect): User {
+  const rawMode = (row.workMode ?? "WFO").trim();
+  const workMode = rawMode === "WFH" || rawMode === "Hybrid" ? rawMode : "WFO";
   return {
     id: row.id,
     fullName: row.fullName,
@@ -157,8 +159,13 @@ export function toPublicUser(row: typeof schema.users.$inferSelect): User {
     dailyVision: row.dailyVision,
     avatarColor: row.avatarColor,
     avatarUrl: row.avatarUrl,
-    casualBalance: row.casualBalance,
-    sickBalance: row.sickBalance,
+    casualBalance: row.casualBalance ?? 12,
+    sickBalance: row.sickBalance ?? 12,
+    shiftStartTime: row.shiftStartTime ?? null,
+    shiftEndTime: row.shiftEndTime ?? null,
+    weekOffs: Array.isArray(row.weekOffs) ? row.weekOffs : null,
+    workMode,
+    geoFenceMandatory: row.geoFenceMandatory ?? true,
   };
 }
 
@@ -195,10 +202,24 @@ async function ensurePostgresTablesExist(): Promise<void> {
       "avatar_color" text DEFAULT '#8B5CF6' NOT NULL,
       "avatar_url" text,
       "casual_balance" integer DEFAULT 12 NOT NULL,
-      "sick_balance" integer DEFAULT 10 NOT NULL,
+      "sick_balance" integer DEFAULT 12 NOT NULL,
+      "shift_start_time" text,
+      "shift_end_time" text,
+      "week_offs" jsonb,
+      "work_mode" text DEFAULT 'WFO' NOT NULL,
+      "geo_fence_mandatory" boolean DEFAULT true NOT NULL,
       "created_at" timestamp with time zone DEFAULT now()
     )
   `);
+  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "shift_start_time" text`);
+  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "shift_end_time" text`);
+  await db.execute(sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "week_offs" jsonb`);
+  await db.execute(
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "work_mode" text DEFAULT 'WFO' NOT NULL`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "geo_fence_mandatory" boolean DEFAULT true NOT NULL`,
+  );
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS "user_smtp_configs" (
       "user_id" text PRIMARY KEY NOT NULL,
@@ -220,6 +241,14 @@ async function ensurePostgresTablesExist(): Promise<void> {
       "teams_last_verified_at" text,
       "teams_last_test_status" text,
       "teams_last_test_error" text,
+      "whatsapp_mode" text DEFAULT 'cloud_api' NOT NULL,
+      "whatsapp_phone_number_id" text DEFAULT '' NOT NULL,
+      "whatsapp_recipient_phone" text DEFAULT '' NOT NULL,
+      "whatsapp_secret_encrypted" text,
+      "whatsapp_enabled" boolean DEFAULT false NOT NULL,
+      "whatsapp_last_verified_at" text,
+      "whatsapp_last_test_status" text,
+      "whatsapp_last_test_error" text,
       "updated_at" text NOT NULL
     )
   `);
@@ -238,111 +267,194 @@ async function ensurePostgresTablesExist(): Promise<void> {
   await db.execute(
     sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "teams_last_test_error" text`,
   );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_mode" text DEFAULT 'cloud_api' NOT NULL`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_phone_number_id" text DEFAULT '' NOT NULL`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_recipient_phone" text DEFAULT '' NOT NULL`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_secret_encrypted" text`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_enabled" boolean DEFAULT false NOT NULL`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_last_verified_at" text`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_last_test_status" text`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "user_smtp_configs" ADD COLUMN IF NOT EXISTS "whatsapp_last_test_error" text`,
+  );
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "companies" (
+      "id" text PRIMARY KEY NOT NULL,
+      "name" text NOT NULL,
+      "code" text DEFAULT '' NOT NULL,
+      "vertical" text DEFAULT '' NOT NULL,
+      "description" text DEFAULT '' NOT NULL,
+      "lead_user_id" text,
+      "member_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
+      "active" boolean DEFAULT true NOT NULL,
+      "created_by" text NOT NULL,
+      "created_at" text NOT NULL,
+      "updated_at" text NOT NULL
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "initiatives" (
+      "id" text PRIMARY KEY NOT NULL,
+      "title" text NOT NULL,
+      "description" text DEFAULT '' NOT NULL,
+      "company_id" text,
+      "battalion_id" text,
+      "lead_user_id" text,
+      "status" text DEFAULT 'on_track' NOT NULL,
+      "progress" integer DEFAULT 0 NOT NULL,
+      "due_date" text,
+      "created_by" text NOT NULL,
+      "created_at" text NOT NULL,
+      "updated_at" text NOT NULL
+    )
+  `);
 }
 
 async function runPortalInitialization(): Promise<void> {
   await ensurePostgresTablesExist();
 
   const seedPassword = (process.env["SEED_DEFAULT_PASSWORD"] ?? "").trim();
+  const fallbackInitialHash = hashPassword(seedPassword || "SacePortal@2026!");
 
-  if (!seedPassword) {
-    console.warn(
-      "[SACE Auth] SEED_DEFAULT_PASSWORD is missing or empty — skipping Super Admin password sync; existing accounts remain intact.",
-    );
-  } else {
-    const hashed = hashPassword(seedPassword);
-    const existingUsers = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
+  const [existingUsers, existingStateRows] = await Promise.all([
+    db.select().from(schema.users),
+    db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
+  ]);
 
-    if (existingUsers.length === 0) {
-      const seedState = createSeedState();
-      for (const u of seedState.users) {
-        await db
-          .insert(schema.users)
-          .values({
-            id: u.id,
-            fullName: u.fullName,
-            username: u.username.toLowerCase(),
-            email: u.email.toLowerCase(),
-            password: hashed,
-            designation: u.designation,
-            department: u.department,
-            role: u.role,
-            reportingAdminId: u.reportingAdminId,
-            active: u.active,
-            dailyVision: u.dailyVision,
-            avatarColor: u.avatarColor,
-            avatarUrl: u.avatarUrl ?? null,
-            casualBalance: u.casualBalance,
-            sickBalance: u.sickBalance,
-          })
-          .onConflictDoNothing();
-      }
-    }
+  const existingStateData = existingStateRows[0]?.data as AppState | undefined;
+  const stateUsers = Array.isArray(existingStateData?.users) ? existingStateData.users : [];
 
-    // Only upsert the configured system Super Admin account on startup without
-    // deleting, truncating, or overwriting any other accounts in users.
-    const existingSuperAdmin = await db
-      .select({ id: schema.users.id })
-      .from(schema.users)
-      .where(sql`lower(${schema.users.email}) = ${SUPER_ADMIN_EMAIL}`)
-      .limit(1);
-
-    if (existingSuperAdmin[0]) {
-      await db
-        .update(schema.users)
-        .set({
-          email: SUPER_ADMIN_EMAIL,
-          username: SUPER_ADMIN_USERNAME,
-          password: hashed,
-          role: "super_admin",
-          active: true,
-        })
-        .where(eq(schema.users.id, existingSuperAdmin[0].id));
-    } else {
+  // 1. If both users table and portal_state are brand-new/empty, seed initial default records once
+  //    using ON CONFLICT DO NOTHING (strictly non-destructive).
+  if (existingUsers.length === 0 && stateUsers.length === 0) {
+    const seedState = createSeedState();
+    for (const u of seedState.users) {
       await db
         .insert(schema.users)
         .values({
-          id: "u-superadmin",
-          fullName: "Super Admin",
-          username: SUPER_ADMIN_USERNAME,
-          email: SUPER_ADMIN_EMAIL,
-          password: hashed,
-          designation: "Super Admin",
-          department: "Executive",
-          role: "super_admin",
-          reportingAdminId: null,
-          active: true,
-          dailyVision: null,
-          avatarColor: "#6b21a8",
-          avatarUrl: null,
-          casualBalance: 20,
-          sickBalance: 12,
+          id: u.id,
+          fullName: u.fullName,
+          username: u.username.toLowerCase(),
+          email: u.email.toLowerCase(),
+          password: fallbackInitialHash,
+          designation: u.designation,
+          department: u.department,
+          role: u.role,
+          reportingAdminId: u.reportingAdminId,
+          active: u.active,
+          dailyVision: u.dailyVision,
+          avatarColor: u.avatarColor,
+          avatarUrl: u.avatarUrl ?? null,
+          casualBalance: u.casualBalance,
+          sickBalance: u.sickBalance,
         })
-        .onConflictDoUpdate({
-          target: schema.users.email,
-          set: {
-            username: SUPER_ADMIN_USERNAME,
-            password: hashed,
-            role: "super_admin",
-            active: true,
-          },
-        });
+        .onConflictDoNothing();
+    }
+  } else if (stateUsers.length > 0) {
+    // 2. Non-destructively restore any user present in portal_state that is missing from users table
+    const existingIds = new Set(existingUsers.map((u) => u.id));
+    const existingEmails = new Set(existingUsers.map((u) => u.email.toLowerCase()));
+    for (const u of stateUsers) {
+      if (!u?.id || !u?.email) continue;
+      if (existingIds.has(u.id) || existingEmails.has(u.email.toLowerCase())) continue;
+      await db
+        .insert(schema.users)
+        .values({
+          id: u.id,
+          fullName: u.fullName,
+          username: (u.username || u.email).toLowerCase(),
+          email: u.email.toLowerCase(),
+          password: fallbackInitialHash,
+          designation: u.designation || "Team Member",
+          department: u.department || "General",
+          role: u.role || "member",
+          reportingAdminId: u.reportingAdminId ?? null,
+          active: u.active ?? true,
+          dailyVision: u.dailyVision ?? null,
+          avatarColor: u.avatarColor || "#8B5CF6",
+          avatarUrl: u.avatarUrl ?? null,
+          casualBalance: u.casualBalance ?? 12,
+          sickBalance: u.sickBalance ?? 10,
+        })
+        .onConflictDoNothing();
     }
   }
 
-  const existingState = await db
-    .select({ id: schema.portalState.id })
-    .from(schema.portalState)
-    .where(eq(schema.portalState.id, PORTAL_STATE_ID))
+  // 3. Ensure system Super Admin exists without deleting, truncating, or overwriting existing accounts.
+  const existingSuperAdmin = await db
+    .select()
+    .from(schema.users)
+    .where(sql`lower(${schema.users.email}) = ${SUPER_ADMIN_EMAIL}`)
     .limit(1);
 
-  if (existingState.length === 0) {
+  if (!existingSuperAdmin[0]) {
+    await db
+      .insert(schema.users)
+      .values({
+        id: "u-superadmin",
+        fullName: "Super Admin",
+        username: SUPER_ADMIN_USERNAME,
+        email: SUPER_ADMIN_EMAIL,
+        password: fallbackInitialHash,
+        designation: "Super Admin",
+        department: "Executive",
+        role: "super_admin",
+        reportingAdminId: null,
+        active: true,
+        dailyVision: null,
+        avatarColor: "#6b21a8",
+        avatarUrl: null,
+        casualBalance: 20,
+        sickBalance: 12,
+      })
+      .onConflictDoNothing();
+  } else if (seedPassword) {
+    await db
+      .update(schema.users)
+      .set({
+        password: hashPassword(seedPassword),
+        role: "super_admin",
+        active: true,
+      })
+      .where(eq(schema.users.id, existingSuperAdmin[0].id));
+  }
+
+  // 4. Synchronize portal_state with current users table non-destructively
+  const allDbUsers = await db.select().from(schema.users);
+  const publicUsers = stripCredentialsFromUsers(allDbUsers.map(toPublicUser));
+
+  if (!existingStateData) {
     const initial = createSeedState();
-    initial.users = stripCredentialsFromUsers(initial.users);
+    initial.users = publicUsers;
     await db
       .insert(schema.portalState)
       .values({ id: PORTAL_STATE_ID, data: initial })
       .onConflictDoNothing();
+  } else {
+    await db
+      .update(schema.portalState)
+      .set({
+        data: {
+          ...existingStateData,
+          users: publicUsers,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.portalState.id, PORTAL_STATE_ID));
   }
 }
 

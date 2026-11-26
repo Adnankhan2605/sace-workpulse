@@ -819,9 +819,23 @@ export const punchInWithGeofence = createServerFn({ method: "POST" })
     const rawConfig: OfficeGeofenceConfig = existing.officeGeofence ?? {
       ...DEFAULT_OFFICE_GEOFENCE,
     };
+    const callingUser = userRows.find((u) => u.id === context.userId);
+    const userRequiresGeofence =
+      callingUser?.geoFenceMandatory !== false && callingUser?.workMode !== "WFH";
     const config: OfficeGeofenceConfig = {
       ...DEFAULT_OFFICE_GEOFENCE,
       ...rawConfig,
+      enabled: Boolean(rawConfig.enabled) && userRequiresGeofence,
+      shiftStartTime:
+        callingUser?.shiftStartTime ||
+        rawConfig.shiftStartTime ||
+        DEFAULT_OFFICE_GEOFENCE.shiftStartTime ||
+        "09:30",
+      shiftEndTime:
+        callingUser?.shiftEndTime ||
+        rawConfig.shiftEndTime ||
+        DEFAULT_OFFICE_GEOFENCE.shiftEndTime ||
+        "18:30",
       offices: getConfiguredOffices(rawConfig),
     };
 
