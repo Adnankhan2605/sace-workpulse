@@ -47,6 +47,7 @@ const SHORT_DAY_LABEL: Record<string, string> = {
 };
 
 export interface SchedulePolicyDraft {
+  shiftTimingEnabled: boolean;
   shiftStartTime: string;
   shiftEndTime: string;
   weekOffs: string[];
@@ -57,6 +58,7 @@ export interface SchedulePolicyDraft {
 }
 
 const DEFAULT_SCHEDULE_POLICY_DRAFT: SchedulePolicyDraft = {
+  shiftTimingEnabled: true,
   shiftStartTime: "09:30",
   shiftEndTime: "18:30",
   weekOffs: ["Sunday"],
@@ -97,7 +99,7 @@ export function UserPolicyBadge({
   const timeRange =
     user.shiftStartTime || user.shiftEndTime
       ? `${user.shiftStartTime || "09:30"}–${user.shiftEndTime || "18:30"}`
-      : "Default Shift";
+      : "Flexible Timing";
 
   const weekOffSummary =
     Array.isArray(user.weekOffs) && user.weekOffs.length > 0
@@ -143,31 +145,90 @@ export function SchedulePolicyEditorFields({
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-shift-start`} className="text-xs font-medium">
-            Shift Login Time
-          </Label>
-          <Input
-            id={`${idPrefix}-shift-start`}
-            type="time"
-            value={value.shiftStartTime}
-            onChange={(e) => onChange((p) => ({ ...p, shiftStartTime: e.target.value }))}
-            className="h-9 tabular-nums"
-          />
+      <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <Label className="text-xs font-semibold text-foreground">Fixed Shift Timing</Label>
+            <p className="text-[11px] text-muted-foreground">
+              {value.shiftTimingEnabled
+                ? "Set fixed login and logout times for this employee"
+                : "Skipped — flexible hours with no fixed shift timing"}
+            </p>
+          </div>
+          <div
+            role="group"
+            aria-label="Fixed shift timing"
+            className="inline-grid grid-cols-2 rounded-lg border border-border bg-background p-0.5 shrink-0"
+          >
+            <button
+              type="button"
+              onClick={() =>
+                onChange((p) => ({
+                  ...p,
+                  shiftTimingEnabled: true,
+                  shiftStartTime: p.shiftStartTime || "09:30",
+                  shiftEndTime: p.shiftEndTime || "18:30",
+                }))
+              }
+              aria-pressed={value.shiftTimingEnabled}
+              className={cn(
+                "rounded-md px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap",
+                value.shiftTimingEnabled
+                  ? "bg-[#5B00A3] text-white shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              On
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onChange((p) => ({
+                  ...p,
+                  shiftTimingEnabled: false,
+                }))
+              }
+              aria-pressed={!value.shiftTimingEnabled}
+              className={cn(
+                "rounded-md px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap",
+                !value.shiftTimingEnabled
+                  ? "bg-[#5B00A3] text-white shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Off
+            </button>
+          </div>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor={`${idPrefix}-shift-end`} className="text-xs font-medium">
-            Shift Logout Time
-          </Label>
-          <Input
-            id={`${idPrefix}-shift-end`}
-            type="time"
-            value={value.shiftEndTime}
-            onChange={(e) => onChange((p) => ({ ...p, shiftEndTime: e.target.value }))}
-            className="h-9 tabular-nums"
-          />
-        </div>
+
+        {value.shiftTimingEnabled && (
+          <div className="grid gap-3 sm:grid-cols-2 border-t border-border/60 pt-3">
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-shift-start`} className="text-xs font-medium">
+                Shift Login Time
+              </Label>
+              <Input
+                id={`${idPrefix}-shift-start`}
+                type="time"
+                value={value.shiftStartTime}
+                onChange={(e) => onChange((p) => ({ ...p, shiftStartTime: e.target.value }))}
+                className="h-9 bg-background tabular-nums"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor={`${idPrefix}-shift-end`} className="text-xs font-medium">
+                Shift Logout Time
+              </Label>
+              <Input
+                id={`${idPrefix}-shift-end`}
+                type="time"
+                value={value.shiftEndTime}
+                onChange={(e) => onChange((p) => ({ ...p, shiftEndTime: e.target.value }))}
+                className="h-9 bg-background tabular-nums"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="space-y-1.5">
@@ -366,8 +427,8 @@ export function CreateUserForm({
       ...(skipSchedule
         ? {}
         : {
-            shiftStartTime: policy.shiftStartTime.trim() || null,
-            shiftEndTime: policy.shiftEndTime.trim() || null,
+            shiftStartTime: policy.shiftTimingEnabled ? policy.shiftStartTime.trim() || null : null,
+            shiftEndTime: policy.shiftTimingEnabled ? policy.shiftEndTime.trim() || null : null,
             weekOffs: policy.weekOffs,
             casualBalance: policy.casualBalance,
             sickBalance: policy.sickBalance,
@@ -384,7 +445,13 @@ export function CreateUserForm({
 
     log(
       "account_created",
-      `${fullName} (${roleLabel(assignedRole)})${skipSchedule ? " · default policy" : " · custom schedule"}`,
+      `${fullName} (${roleLabel(assignedRole)})${
+        skipSchedule
+          ? " · default policy"
+          : policy.shiftTimingEnabled
+            ? " · custom schedule"
+            : " · flexible shift timing"
+      }`,
     );
     toast.success(
       skipSchedule
@@ -665,7 +732,12 @@ export function EditUserPolicyDialog({
 
   React.useEffect(() => {
     if (!user) return;
+    const hasShiftTiming = Boolean(
+      (typeof user.shiftStartTime === "string" && user.shiftStartTime.trim().length > 0) ||
+      (typeof user.shiftEndTime === "string" && user.shiftEndTime.trim().length > 0),
+    );
     setPolicy({
+      shiftTimingEnabled: hasShiftTiming,
       shiftStartTime: user.shiftStartTime ?? "09:30",
       shiftEndTime: user.shiftEndTime ?? "18:30",
       weekOffs:
@@ -684,10 +756,12 @@ export function EditUserPolicyDialog({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    const nextStart = policy.shiftTimingEnabled ? policy.shiftStartTime.trim() || null : null;
+    const nextEnd = policy.shiftTimingEnabled ? policy.shiftEndTime.trim() || null : null;
     const res = await saveUser({
       userId: user.id,
-      shiftStartTime: policy.shiftStartTime.trim() || null,
-      shiftEndTime: policy.shiftEndTime.trim() || null,
+      shiftStartTime: nextStart,
+      shiftEndTime: nextEnd,
       weekOffs: policy.weekOffs,
       casualBalance: policy.casualBalance,
       sickBalance: policy.sickBalance,
@@ -701,9 +775,12 @@ export function EditUserPolicyDialog({
       return;
     }
 
+    const timingSummary = policy.shiftTimingEnabled
+      ? `${nextStart || "09:30"}–${nextEnd || "18:30"}`
+      : "Flexible timing";
     log(
       "policy_updated",
-      `${user.fullName}: ${policy.shiftStartTime || "09:30"}–${policy.shiftEndTime || "18:30"}, ${policy.workMode}, Geofence ${policy.geoFenceMandatory ? "On" : "Off"}`,
+      `${user.fullName}: ${timingSummary}, ${policy.workMode}, Geofence ${policy.geoFenceMandatory ? "On" : "Off"}`,
     );
     toast.success(`Updated schedule & policy for ${user.fullName}.`);
     onOpenChange(false);

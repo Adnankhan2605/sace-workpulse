@@ -7,7 +7,7 @@ import {
   savePortalBrandingConfig,
   saveScopedPortalState,
 } from "./db.functions";
-import { getCurrentSession, loginPortal, logoutPortal } from "./auth.functions";
+import { getCurrentSession, logoutPortal } from "./auth.functions";
 import { supabase } from "@/integrations/supabase/client";
 import { DEFAULT_ADMIN_PERMS, dateKey } from "./seed";
 import { DEFAULT_PORTAL_BRANDING, applyPortalBrandingToDocument } from "./branding";
@@ -157,6 +157,20 @@ function errMessage(e: unknown, fallback: string) {
   const raw = e instanceof Error ? e.message : String(e ?? "");
   const cleaned = raw.replace(/^Error:\s*/i, "").trim();
   return cleaned || fallback;
+}
+
+const RUNTIME_LEAK_RE =
+  /is not defined|ES module scope|ReferenceError|TypeError|SyntaxError|RangeError|ENOENT|ECONNREFUSED|ETIMEDOUT|EACCES|HTTPError|Cannot read properties|Unexpected token|JSON\.parse/i;
+
+function sanitizeAuthBannerError(
+  raw: unknown,
+  fallback = "Unable to sign in right now. Please try again.",
+) {
+  const cleaned = typeof raw === "string" ? raw.replace(/^Error:\s*/i, "").trim() : "";
+  if (!cleaned || cleaned.length > 240 || RUNTIME_LEAK_RE.test(cleaned)) {
+    return fallback;
+  }
+  return cleaned;
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
@@ -512,9 +526,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const res = await loginPortal({ data: { identifier: cleanId, password } });
-        if (!res.ok || !res.user) {
-          return { ok: false, error: res.error ?? "Invalid username/email or password." };
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ identifier: cleanId, password }),
+        });
+
+        let res: {
+          ok?: boolean;
+          user?: User;
+          sessionToken?: string;
+          error?: string;
+        } | null = null;
+        try {
+          res = (await response.json()) as {
+            ok?: boolean;
+            user?: User;
+            sessionToken?: string;
+            error?: string;
+          };
+        } catch {
+          res = null;
+        }
+
+        if (!response.ok || !res?.ok || !res.user) {
+          const fallback =
+            response.status >= 500
+              ? "Unable to sign in right now. Please try again in a moment."
+              : "Invalid username/email or password.";
+          return {
+            ok: false,
+            error: sanitizeAuthBannerError(res?.error, fallback),
+          };
         }
 
         const authUser = res.user;
@@ -540,8 +584,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         return { ok: true };
-      } catch (err) {
-        return { ok: false, error: errMessage(err, "Unable to sign in.") };
+      } catch {
+        return { ok: false, error: "Unable to sign in right now. Please try again in a moment." };
       }
     },
 
@@ -555,9 +599,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       loadedFromServerRef.current = false;
       setClientSessionToken(null);
       try {
-        await logoutPortal();
+        await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
       } catch {
-        /* ignore */
+        try {
+          await logoutPortal();
+        } catch {
+          /* ignore */
+        }
       }
       try {
         await supabase.auth.signOut();

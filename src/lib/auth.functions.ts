@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
 import { z } from "zod";
-import { eq, or, sql } from "drizzle-orm";
 
 const LoginSchema = z.object({
   identifier: z.string().trim().min(1, "Enter your username or email.").max(160),
@@ -8,92 +8,65 @@ const LoginSchema = z.object({
 });
 
 export const loginPortal = createServerFn({ method: "POST" })
-  .inputValidator((raw: unknown) => LoginSchema.parse(raw))
+  .inputValidator((raw: unknown) => raw as { identifier: string; password: string })
   .handler(async ({ data }) => {
-    const { assertRateLimit, getClientIp } = await import("./rate-limit.server.ts");
-    const {
-      createSignedToken,
-      ensurePortalInitialized,
-      hashPassword,
-      setSessionCookie,
-      toPublicUser,
-      verifyPasswordHash,
-    } = await import("./auth.server.ts");
-    const { db } = await import("../db/index.ts");
-    const schema = await import("../db/schema.ts");
-
-    const cleanIdentifier = data.identifier.trim().toLowerCase();
-    const clientIp = getClientIp();
-    assertRateLimit(`login:${clientIp}:${cleanIdentifier}`, {
-      limit: 8,
-      windowMs: 5 * 60 * 1000,
-      message: "Too many failed sign-in attempts. Please wait 5 minutes before retrying.",
-    });
-
-    await ensurePortalInitialized();
-
-    const rows = await db
-      .select()
-      .from(schema.users)
-      .where(
-        or(
-          sql`lower(${schema.users.email}) = ${cleanIdentifier}`,
-          sql`lower(${schema.users.username}) = ${cleanIdentifier}`,
-          eq(schema.users.id, data.identifier.trim()),
-        ),
-      )
-      .limit(1);
-
-    const userRow = rows[0];
-    if (!userRow) {
-      const anyUser = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
-      if (anyUser.length === 0 && !process.env["SEED_DEFAULT_PASSWORD"]) {
+    try {
+      const parsed = LoginSchema.safeParse(data);
+      if (!parsed.success) {
         return {
           ok: false as const,
-          error:
-            "No portal accounts initialized yet. Configure SEED_DEFAULT_PASSWORD in environment secrets and retry.",
+          error: parsed.error.issues[0]?.message ?? "Enter your username or email and password.",
         };
       }
-      return { ok: false as const, error: "Invalid username/email or password." };
-    }
 
-    if (!userRow.active) {
-      return { ok: false as const, error: "This account is inactive. Contact your admin." };
-    }
+      const { authenticatePortalLogin, setSessionCookie } = await import("./auth.server.ts");
+      let req: Request | null = null;
+      try {
+        req = getRequest() ?? null;
+      } catch {
+        req = null;
+      }
 
-    const { valid, needsRehash } = verifyPasswordHash(data.password, userRow.password);
-    if (!valid) {
-      return { ok: false as const, error: "Invalid username/email or password." };
-    }
+      const result = await authenticatePortalLogin(parsed.data, req);
+      if (!result.ok) {
+        return { ok: false as const, error: result.error };
+      }
 
-    // Automatically upgrade any legacy plaintext password to scrypt hash
-    if (needsRehash) {
-      await db
-        .update(schema.users)
-        .set({ password: hashPassword(data.password) })
-        .where(eq(schema.users.id, userRow.id));
+      setSessionCookie(result.user.id, result.sessionToken);
+      return {
+        ok: true as const,
+        user: result.user,
+        sessionToken: result.sessionToken,
+      };
+    } catch (err) {
+      console.error("[SACE Auth] loginPortal error:", err);
+      return {
+        ok: false as const,
+        error: "Unable to sign in right now. Please try again in a moment.",
+      };
     }
-
-    const sessionToken = createSignedToken(userRow.id);
-    setSessionCookie(userRow.id, sessionToken);
-    return {
-      ok: true as const,
-      user: toPublicUser(userRow),
-      sessionToken,
-    };
   });
 
 export const logoutPortal = createServerFn({ method: "POST" }).handler(async () => {
-  const { clearSessionCookie } = await import("./auth.server.ts");
-  clearSessionCookie();
+  try {
+    const { clearSessionCookie } = await import("./auth.server.ts");
+    clearSessionCookie();
+  } catch (err) {
+    console.error("[SACE Auth] logoutPortal error:", err);
+  }
   return { ok: true as const };
 });
 
 export const getCurrentSession = createServerFn({ method: "GET" }).handler(async () => {
-  const { resolveAuthenticatedUser } = await import("./auth.server.ts");
-  const auth = await resolveAuthenticatedUser();
-  if (!auth) {
+  try {
+    const { resolveAuthenticatedUser } = await import("./auth.server.ts");
+    const auth = await resolveAuthenticatedUser();
+    if (!auth) {
+      return { authenticated: false as const, user: null };
+    }
+    return { authenticated: true as const, user: auth.user };
+  } catch (err) {
+    console.error("[SACE Auth] getCurrentSession error:", err);
     return { authenticated: false as const, user: null };
   }
-  return { authenticated: true as const, user: auth.user };
 });

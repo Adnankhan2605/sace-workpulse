@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { cert, getApps, initializeApp, type ServiceAccount } from "firebase-admin/app";
-import { getFirestore, type Firestore } from "firebase-admin/firestore";
+import type { ServiceAccount } from "firebase-admin/app";
+import type { Firestore } from "firebase-admin/firestore";
 import { getTableColumns, type SQL, type Table } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
@@ -10,6 +10,7 @@ import * as schema from "./schema.ts";
 declare global {
   var _postgresPool: Pool | undefined;
   var _firestoreDb: Firestore | null | undefined;
+  var _firestoreInitPromise: Promise<Firestore | null> | undefined;
   var _firestoreHydratedPromise: Promise<void> | undefined;
   var _firestoreReady: boolean | undefined;
   var _mockDbTables: Map<string, Map<string, Record<string, unknown>>> | undefined;
@@ -36,7 +37,7 @@ function hasFirebaseAdminCredentials(): boolean {
   );
 }
 
-function getFirestoreInstance(): Firestore | null {
+async function getFirestoreInstance(): Promise<Firestore | null> {
   if (process.env["SACE_DB_FILE"]) {
     // Isolated local file test override
     return null;
@@ -48,41 +49,62 @@ function getFirestoreInstance(): Firestore | null {
     global._firestoreDb = null;
     return null;
   }
-  try {
-    const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
-    if (!fs.existsSync(configPath)) {
-      global._firestoreDb = null;
-      return null;
-    }
-    const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-      projectId?: string;
-      firestoreDatabaseId?: string;
-    };
-    if (!raw.projectId) {
-      global._firestoreDb = null;
-      return null;
-    }
-    const serviceAccountRaw = process.env["FIREBASE_SERVICE_ACCOUNT_JSON"]?.trim();
-    const existingApp = getApps()[0];
-    const app =
-      existingApp ??
-      initializeApp(
-        serviceAccountRaw
-          ? {
-              projectId: raw.projectId,
-              credential: cert(JSON.parse(serviceAccountRaw) as ServiceAccount),
-            }
-          : { projectId: raw.projectId },
-      );
-    global._firestoreDb = raw.firestoreDatabaseId
-      ? getFirestore(app, raw.firestoreDatabaseId)
-      : getFirestore(app);
-    global._firestoreDb.settings({ ignoreUndefinedProperties: true });
-    return global._firestoreDb;
-  } catch {
-    global._firestoreDb = null;
-    return null;
+  if (!global._firestoreInitPromise) {
+    global._firestoreInitPromise = (async () => {
+      try {
+        const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
+        if (!fs.existsSync(configPath)) {
+          global._firestoreDb = null;
+          return null;
+        }
+        const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+          projectId?: string;
+          firestoreDatabaseId?: string;
+        };
+        if (!raw.projectId) {
+          global._firestoreDb = null;
+          return null;
+        }
+        const [{ cert, getApps, initializeApp }, { getFirestore, initializeFirestore }] =
+          await Promise.all([import("firebase-admin/app"), import("firebase-admin/firestore")]);
+        const serviceAccountRaw = process.env["FIREBASE_SERVICE_ACCOUNT_JSON"]?.trim();
+        const existingApp = getApps()[0];
+        const app =
+          existingApp ??
+          initializeApp(
+            serviceAccountRaw
+              ? {
+                  projectId: raw.projectId,
+                  credential: cert(JSON.parse(serviceAccountRaw) as ServiceAccount),
+                }
+              : { projectId: raw.projectId },
+          );
+        let firestore: Firestore;
+        try {
+          firestore = raw.firestoreDatabaseId
+            ? initializeFirestore(app, { preferRest: true }, raw.firestoreDatabaseId)
+            : initializeFirestore(app, { preferRest: true });
+          firestore.settings({ ignoreUndefinedProperties: true });
+        } catch {
+          firestore = raw.firestoreDatabaseId
+            ? getFirestore(app, raw.firestoreDatabaseId)
+            : getFirestore(app);
+          try {
+            firestore.settings({ ignoreUndefinedProperties: true });
+          } catch {
+            // Firestore already initialized with settings
+          }
+        }
+        global._firestoreDb = firestore;
+        return global._firestoreDb;
+      } catch (err) {
+        console.warn("[SACE DB] Cloud Firestore unavailable, continuing with local store:", err);
+        global._firestoreDb = null;
+        return null;
+      }
+    })();
   }
+  return global._firestoreInitPromise;
 }
 
 function sanitizeForFirestore(value: unknown): unknown {
@@ -104,7 +126,7 @@ function sanitizeForFirestore(value: unknown): unknown {
 async function ensureFirestoreHydrated(
   store: Map<string, Map<string, Record<string, unknown>>>,
 ): Promise<void> {
-  const firestore = getFirestoreInstance();
+  const firestore = await getFirestoreInstance();
   if (!firestore) return;
   if (!global._firestoreHydratedPromise) {
     global._firestoreHydratedPromise = (async () => {
@@ -154,7 +176,7 @@ async function persistRowsToFirestore(
   rows: Array<{ id: string; row: Record<string, unknown> }>,
 ): Promise<void> {
   if (rows.length === 0) return;
-  const firestore = getFirestoreInstance();
+  const firestore = await getFirestoreInstance();
   if (!firestore) return;
   try {
     const batch = firestore.batch();
@@ -175,7 +197,7 @@ async function persistRowsToFirestore(
 
 async function deleteRowsFromFirestore(tableName: string, ids: string[]): Promise<void> {
   if (ids.length === 0) return;
-  const firestore = getFirestoreInstance();
+  const firestore = await getFirestoreInstance();
   if (!firestore) return;
   try {
     const batch = firestore.batch();
@@ -456,10 +478,9 @@ function projectRow(
 function createPersistentFallbackDb() {
   if (!global._mockDbWarned) {
     global._mockDbWarned = true;
-    const firestore = getFirestoreInstance();
     console.info(
-      firestore
-        ? `[SACE DB] Connected to Cloud Firestore + persistent local store at ${getPersistentFallbackPath()}.`
+      hasFirebaseAdminCredentials()
+        ? `[SACE DB] Using Cloud Firestore + persistent local store at ${getPersistentFallbackPath()}.`
         : `[SACE DB] Using persistent file-backed database at ${getPersistentFallbackPath()}.`,
     );
   }

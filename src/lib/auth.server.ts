@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
 import { deleteCookie, getCookie, getRequest, setCookie } from "@tanstack/react-start/server";
-import { eq, sql } from "drizzle-orm";
+import { eq, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import { db, hasPostgresConfig } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
+import { checkRateLimit, getClientIpFromRequest } from "./rate-limit.server.ts";
 import { DEFAULT_ADMIN_PERMS, createSeedState } from "./seed.ts";
 import type { AppState, Perm, Role, User } from "./types.ts";
 
@@ -112,13 +114,50 @@ export function verifySignedToken(token: string): string | null {
   }
 }
 
-function isHttpsRequest(): boolean {
-  const req = getRequest();
+function isHttpsFromRequest(req?: Request | null): boolean {
   const proto = req?.headers?.get("x-forwarded-proto") ?? "";
   const origin = req?.headers?.get("origin") ?? "";
   return Boolean(
     proto.includes("https") || req?.url?.startsWith("https://") || origin.startsWith("https://"),
   );
+}
+
+function isHttpsRequest(): boolean {
+  try {
+    return isHttpsFromRequest(getRequest());
+  } catch {
+    return false;
+  }
+}
+
+export function buildSessionSetCookieHeader(token: string, req?: Request | null): string {
+  const isHttps = isHttpsFromRequest(req);
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    `Max-Age=${SESSION_TTL_SECONDS}`,
+    "HttpOnly",
+    isHttps ? "SameSite=None" : "SameSite=Lax",
+  ];
+  if (isHttps) {
+    parts.push("Secure", "Partitioned");
+  }
+  return parts.join("; ");
+}
+
+export function buildClearSessionCookieHeader(req?: Request | null): string {
+  const isHttps = isHttpsFromRequest(req);
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    "Path=/",
+    "Max-Age=0",
+    "HttpOnly",
+    isHttps ? "SameSite=None" : "SameSite=Lax",
+  ];
+  if (isHttps) {
+    parts.push("Secure", "Partitioned");
+  }
+  return parts.join("; ");
 }
 
 export function setSessionCookie(userId: string, existingToken?: string): void {
@@ -577,4 +616,105 @@ export function verifyMediaAccessToken(fileId: string, token: string): boolean {
   const a = Buffer.from(token, "utf8");
   const b = Buffer.from(expected, "utf8");
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+export const LoginInputSchema = z.object({
+  identifier: z.string().trim().min(1, "Enter your username or email.").max(160),
+  password: z.string().min(1, "Enter your password.").max(128),
+});
+
+export type PortalLoginResult =
+  | { ok: true; status: 200; user: User; sessionToken: string }
+  | { ok: false; status: 400 | 401 | 403 | 429 | 500; error: string };
+
+export async function authenticatePortalLogin(
+  rawInput: unknown,
+  req?: Request | null,
+): Promise<PortalLoginResult> {
+  const parsed = LoginInputSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      status: 400,
+      error: parsed.error.issues[0]?.message ?? "Enter your username or email and password.",
+    };
+  }
+
+  const rawIdentifier = parsed.data.identifier.trim();
+  const cleanIdentifier = rawIdentifier.toLowerCase();
+  const clientIp = getClientIpFromRequest(req);
+  const rateCheck = checkRateLimit(`login:${clientIp}:${cleanIdentifier}`, {
+    limit: 8,
+    windowMs: 5 * 60 * 1000,
+    message: "Too many failed sign-in attempts. Please wait 5 minutes before retrying.",
+  });
+  if (!rateCheck.allowed) {
+    return {
+      ok: false,
+      status: 429,
+      error: rateCheck.message,
+    };
+  }
+
+  try {
+    await ensurePortalInitialized();
+
+    const rows = await db
+      .select()
+      .from(schema.users)
+      .where(
+        or(
+          sql`lower(${schema.users.email}) = ${cleanIdentifier}`,
+          sql`lower(${schema.users.username}) = ${cleanIdentifier}`,
+          eq(schema.users.id, rawIdentifier),
+        ),
+      )
+      .limit(1);
+
+    const userRow = rows[0];
+    if (!userRow) {
+      const anyUser = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
+      if (anyUser.length === 0 && !process.env["SEED_DEFAULT_PASSWORD"]) {
+        return {
+          ok: false,
+          status: 400,
+          error:
+            "No portal accounts initialized yet. Configure SEED_DEFAULT_PASSWORD in environment secrets and retry.",
+        };
+      }
+      return { ok: false, status: 401, error: "Invalid username/email or password." };
+    }
+
+    if (!userRow.active) {
+      return { ok: false, status: 403, error: "This account is inactive. Contact your admin." };
+    }
+
+    const { valid, needsRehash } = verifyPasswordHash(parsed.data.password, userRow.password);
+    if (!valid) {
+      return { ok: false, status: 401, error: "Invalid username/email or password." };
+    }
+
+    // Automatically upgrade any legacy plaintext password to scrypt hash
+    if (needsRehash) {
+      await db
+        .update(schema.users)
+        .set({ password: hashPassword(parsed.data.password) })
+        .where(eq(schema.users.id, userRow.id));
+    }
+
+    const sessionToken = createSignedToken(userRow.id);
+    return {
+      ok: true,
+      status: 200,
+      user: toPublicUser(userRow),
+      sessionToken,
+    };
+  } catch (err) {
+    console.error("[SACE Auth] Sign-in error:", err);
+    return {
+      ok: false,
+      status: 500,
+      error: "Unable to sign in right now. Please try again in a moment.",
+    };
+  }
 }

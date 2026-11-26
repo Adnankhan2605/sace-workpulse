@@ -58,8 +58,17 @@ async function normalizeCatastrophicSsrResponse(
   const captured = consumeLastCapturedError();
   console.error(captured ?? new Error(`h3 swallowed SSR error: ${body}`));
   if (isJsonOrRpcRequest(request)) {
+    const pathname = (() => {
+      try {
+        return new URL(request.url).pathname;
+      } catch {
+        return "";
+      }
+    })();
     const message =
-      captured instanceof Error ? captured.message : "Server request failed. Please try again.";
+      pathname.startsWith("/api/auth") || pathname.includes("loginPortal")
+        ? "Unable to sign in right now. Please try again in a moment."
+        : "Server request failed. Please try again.";
     return new Response(JSON.stringify({ ok: false, error: message }), {
       status: 500,
       headers: { "content-type": "application/json; charset=utf-8" },
@@ -763,9 +772,84 @@ async function handleOwnerApi(request: Request): Promise<Response | null> {
   }
 }
 
+async function handleAuthApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  const path = url.pathname;
+  if (path !== "/api/auth/login" && path !== "/api/auth/logout" && path !== "/api/auth/session") {
+    return null;
+  }
+
+  const json = (body: unknown, status = 200, extraHeaders?: Record<string, string>) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        ...(extraHeaders ?? {}),
+      },
+    });
+
+  try {
+    if (path === "/api/auth/login") {
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+      let payload: unknown;
+      try {
+        payload = await request.json();
+      } catch {
+        return json({ ok: false, error: "Invalid sign-in request." }, 400);
+      }
+
+      const { authenticatePortalLogin, buildSessionSetCookieHeader } =
+        await import("./lib/auth.server.ts");
+      const result = await authenticatePortalLogin(payload, request);
+      if (!result.ok) {
+        return json({ ok: false, error: result.error }, result.status);
+      }
+
+      return json({ ok: true, user: result.user, sessionToken: result.sessionToken }, 200, {
+        "set-cookie": buildSessionSetCookieHeader(result.sessionToken, request),
+      });
+    }
+
+    if (path === "/api/auth/logout") {
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+      const { buildClearSessionCookieHeader } = await import("./lib/auth.server.ts");
+      return json({ ok: true }, 200, { "set-cookie": buildClearSessionCookieHeader(request) });
+    }
+
+    if (path === "/api/auth/session") {
+      if (request.method !== "GET") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+      const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
+      const auth = await resolveAuthenticatedUserFromRequest(request);
+      if (!auth) {
+        return json({ authenticated: false, user: null }, 200);
+      }
+      return json({ authenticated: true, user: auth.user }, 200);
+    }
+
+    return json({ ok: false, error: "Method not allowed." }, 405);
+  } catch (err) {
+    console.error("[SACE Auth API] Unhandled error:", err);
+    return json(
+      { ok: false, error: "Unable to complete authentication right now. Please try again." },
+      500,
+    );
+  }
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const authResponse = await handleAuthApi(request);
+      if (authResponse) {
+        return withSecurityHeaders(authResponse);
+      }
       const ownerResponse = await handleOwnerApi(request);
       if (ownerResponse) {
         return withSecurityHeaders(ownerResponse);
@@ -799,9 +883,18 @@ export default {
       const normalized = await normalizeCatastrophicSsrResponse(response, request);
       return withSecurityHeaders(normalized);
     } catch (error) {
-      console.error(error);
+      console.error("[SACE Server Error]", error);
       if (isJsonOrRpcRequest(request)) {
-        const message = error instanceof Error ? error.message : "Internal server error.";
+        const pathname = (() => {
+          try {
+            return new URL(request.url).pathname;
+          } catch {
+            return "";
+          }
+        })();
+        const message = pathname.startsWith("/api/auth")
+          ? "Unable to sign in right now. Please try again in a moment."
+          : "Server request failed. Please try again.";
         return withSecurityHeaders(
           new Response(JSON.stringify({ ok: false, error: message }), {
             status: 500,

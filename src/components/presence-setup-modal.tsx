@@ -149,22 +149,33 @@ export function PresenceSetupModal({
     onOpenChange(false);
   };
 
+  const handleSkip = () => {
+    if (saving) return;
+    try {
+      window.sessionStorage.setItem(PRESENCE_SESSION_KEY, "1");
+    } catch {
+      // Ignore storage access restrictions
+    }
+    onOpenChange(false);
+  };
+
   return (
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (isMandatoryLoginPrompt && !nextOpen) return;
-        onOpenChange(nextOpen);
+        if (!nextOpen) {
+          if (isMandatoryLoginPrompt) {
+            handleSkip();
+            return;
+          }
+          onOpenChange(false);
+          return;
+        }
+        onOpenChange(true);
       }}
     >
       <DialogContent
-        showCloseButton={!isMandatoryLoginPrompt}
-        onEscapeKeyDown={(ev) => {
-          if (isMandatoryLoginPrompt) ev.preventDefault();
-        }}
-        onPointerDownOutside={(ev) => {
-          if (isMandatoryLoginPrompt) ev.preventDefault();
-        }}
+        showCloseButton={!saving}
         className="max-h-[92vh] max-w-2xl overflow-y-auto rounded-2xl border-border bg-card p-0 shadow-xl"
       >
         <div className="bg-gradient-to-r from-[#2D0029] via-[#5B00A3] to-[#8A007E] px-6 py-5 text-white">
@@ -332,7 +343,17 @@ export function PresenceSetupModal({
 
           {/* Footer */}
           <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-4">
-            {!isMandatoryLoginPrompt && (
+            {isMandatoryLoginPrompt ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleSkip}
+                disabled={saving}
+              >
+                Skip for Now
+              </Button>
+            ) : (
               <Button
                 type="button"
                 variant="ghost"

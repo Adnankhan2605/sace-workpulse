@@ -5,11 +5,37 @@
 //     React/TanStack dedupe, error logger plugins, and sandbox detection (port/host/strictPort).
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import type { Plugin } from "vite";
 
 function shouldIgnoreLog(entry?: { code?: string; message?: string }): boolean {
   return Boolean(
     entry?.code === "MODULE_LEVEL_DIRECTIVE" || entry?.message?.includes('directive "use client"'),
   );
+}
+
+function esmDirnameFixPlugin(): Plugin {
+  const dirnameExpr =
+    '(typeof import.meta !== "undefined" && import.meta.dirname ? import.meta.dirname : (typeof process !== "undefined" ? process.cwd() : "."))';
+  const filenameExpr =
+    '(typeof import.meta !== "undefined" && import.meta.filename ? import.meta.filename : "")';
+  const dirnamePattern = /(?<![.$\w])__dirname\b/g;
+  const filenamePattern = /(?<![.$\w])__filename\b/g;
+
+  return {
+    name: "sace-esm-dirname-fix",
+    apply: "build",
+    enforce: "post",
+    renderChunk(code, chunk) {
+      if (this.environment?.config?.consumer !== "server") return null;
+      if (chunk.fileName.endsWith(".css")) return null;
+      if (!code.includes("__dirname") && !code.includes("__filename")) return null;
+      const updated = code
+        .replace(dirnamePattern, dirnameExpr)
+        .replace(filenamePattern, filenameExpr);
+      if (updated === code) return null;
+      return { code: updated, map: null };
+    },
+  };
 }
 
 export default defineConfig({
@@ -23,6 +49,7 @@ export default defineConfig({
     client: { entry: "client" },
   },
   vite: {
+    plugins: [esmDirnameFixPlugin()],
     server: {
       host: "0.0.0.0",
       port: 3000,
