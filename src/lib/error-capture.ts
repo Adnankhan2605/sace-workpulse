@@ -62,11 +62,31 @@ console.error = (...args: unknown[]) => {
   originalConsoleError(...expanded);
 };
 
+declare global {
+  var __saceProcessErrorHandlersInstalled: boolean | undefined;
+}
+
 if (typeof globalThis.addEventListener === "function") {
   globalThis.addEventListener("error", (event) => record((event as ErrorEvent).error ?? event));
   globalThis.addEventListener("unhandledrejection", (event) =>
     record((event as PromiseRejectionEvent).reason),
   );
+}
+
+if (
+  typeof process !== "undefined" &&
+  typeof process.on === "function" &&
+  !globalThis.__saceProcessErrorHandlersInstalled
+) {
+  globalThis.__saceProcessErrorHandlersInstalled = true;
+  process.on("unhandledRejection", (reason) => {
+    record(reason);
+    console.error("[SACE Server] Unhandled promise rejection:", describeError(reason));
+  });
+  process.on("uncaughtException", (error) => {
+    record(error);
+    console.error("[SACE Server] Uncaught exception:", describeError(error));
+  });
 }
 
 export function consumeLastCapturedError(): unknown {

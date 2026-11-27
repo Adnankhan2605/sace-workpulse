@@ -3,7 +3,6 @@ import { eq, sql } from "drizzle-orm";
 import { assertPersistentStorageReady, db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import {
-  ensurePortalInitialized,
   getAdminPermsFromState,
   hashPassword,
   stripCredentialsFromUsers,
@@ -49,7 +48,6 @@ async function syncUsersToPortalState(): Promise<void> {
 }
 
 export async function listUsersRecord(caller: CallerContext): Promise<User[]> {
-  await ensurePortalInitialized();
   const rows = await db.select().from(schema.users);
   const publicUsers = rows.map(toPublicUser);
   if (caller.role === "super_admin") {
@@ -91,7 +89,6 @@ export async function createAccountRecord(
 
   assertRateLimit(`accounts:${caller.userId}`, { limit: 30, windowMs: 60_000 });
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const email = data.email.trim().toLowerCase();
   const existingEmail = await db
@@ -212,7 +209,6 @@ export async function saveAccountRecord(
 
   assertRateLimit(`accounts:${caller.userId}`, { limit: 60, windowMs: 60_000 });
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const isSuperAdmin = caller.role === "super_admin";
   const isAdmin = caller.role === "admin";
@@ -384,7 +380,6 @@ export async function deleteAccountRecord(
   }
 
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const targetRows = await db
     .select()
@@ -442,7 +437,6 @@ export async function saveAdminPermsRecord(
   }
 
   const sanitizedPerms = data.perms.filter((p) => p !== "manage_admins");
-  await ensurePortalInitialized();
 
   const rows = await db
     .select()

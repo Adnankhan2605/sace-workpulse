@@ -243,10 +243,8 @@ export const getScopedPortalState = createServerFn({ method: "GET" })
     const { eq } = await import("drizzle-orm");
     const { db } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
-    const { ensurePortalInitialized, toPublicUser } = await import("./auth.server.ts");
-    const { createSeedState } = await import("./seed.ts");
-
-    await ensurePortalInitialized();
+    const { toPublicUser } = await import("./auth.server.ts");
+    const { createEmptyPortalState } = await import("./seed.ts");
 
     const [stateRows, userRows] = await Promise.all([
       db
@@ -257,7 +255,7 @@ export const getScopedPortalState = createServerFn({ method: "GET" })
       db.select().from(schema.users),
     ]);
 
-    const rawState = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+    const rawState = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
     const publicUsers = userRows.map(toPublicUser);
 
     return {
@@ -277,11 +275,8 @@ export const saveScopedPortalState = createServerFn({ method: "POST" })
     const { eq } = await import("drizzle-orm");
     const { db } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
-    const { ensurePortalInitialized, stripCredentialsFromUsers, toPublicUser } =
-      await import("./auth.server.ts");
-    const { createSeedState } = await import("./seed.ts");
-
-    await ensurePortalInitialized();
+    const { stripCredentialsFromUsers, toPublicUser } = await import("./auth.server.ts");
+    const { createEmptyPortalState } = await import("./seed.ts");
 
     const [stateRows, userRows] = await Promise.all([
       db
@@ -292,7 +287,7 @@ export const saveScopedPortalState = createServerFn({ method: "POST" })
       db.select().from(schema.users),
     ]);
 
-    const existing = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+    const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
     const publicUsers = userRows.map(toPublicUser);
     const isSuperAdmin = context.role === "super_admin";
     const isAdmin = context.role === "admin";
@@ -686,11 +681,8 @@ export const saveOfficeGeofenceConfig = createServerFn({ method: "POST" })
     const { eq } = await import("drizzle-orm");
     const { db } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
-    const { ensurePortalInitialized, stripCredentialsFromUsers, toPublicUser } =
-      await import("./auth.server.ts");
-    const { createSeedState } = await import("./seed.ts");
-
-    await ensurePortalInitialized();
+    const { stripCredentialsFromUsers, toPublicUser } = await import("./auth.server.ts");
+    const { createEmptyPortalState } = await import("./seed.ts");
 
     const [stateRows, userRows] = await Promise.all([
       db
@@ -701,7 +693,7 @@ export const saveOfficeGeofenceConfig = createServerFn({ method: "POST" })
       db.select().from(schema.users),
     ]);
 
-    const existing = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+    const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
     const canConfigure =
       context.role === "super_admin" ||
       context.role === "admin" ||
@@ -800,11 +792,8 @@ export const punchInWithGeofence = createServerFn({ method: "POST" })
     const { eq } = await import("drizzle-orm");
     const { db } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
-    const { ensurePortalInitialized, stripCredentialsFromUsers, toPublicUser } =
-      await import("./auth.server.ts");
-    const { createSeedState, dateKey } = await import("./seed.ts");
-
-    await ensurePortalInitialized();
+    const { stripCredentialsFromUsers, toPublicUser } = await import("./auth.server.ts");
+    const { createEmptyPortalState, dateKey } = await import("./seed.ts");
 
     const [stateRows, userRows] = await Promise.all([
       db
@@ -815,7 +804,7 @@ export const punchInWithGeofence = createServerFn({ method: "POST" })
       db.select().from(schema.users),
     ]);
 
-    const existing = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+    const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
     const rawConfig: OfficeGeofenceConfig = existing.officeGeofence ?? {
       ...DEFAULT_OFFICE_GEOFENCE,
     };
@@ -985,24 +974,13 @@ export const punchInWithGeofence = createServerFn({ method: "POST" })
 
 export const checkPostgresHealth = createServerFn({ method: "GET" })
   .middleware([requirePortalAuth])
-  .handler(async ({ context }) => {
-    if (context.role !== "super_admin" && context.role !== "admin") {
-      throw new Error("Forbidden: Admin access required.");
-    }
-    try {
-      const { sql } = await import("drizzle-orm");
-      const { db } = await import("../db/index.ts");
-      await db.execute(sql`SELECT 1`);
-      return {
-        connected: true,
-        engine: "PostgreSQL",
-      };
-    } catch {
-      return {
-        connected: false,
-        engine: "PostgreSQL",
-      };
-    }
+  .handler(async () => {
+    const { getDatabasePersistenceHealth } = await import("../db/index.ts");
+    const health = await getDatabasePersistenceHealth();
+    return {
+      ...health,
+      engine: "PostgreSQL",
+    };
   });
 
 const PortalBrandingSchema = z.object({
@@ -1027,11 +1005,16 @@ const PortalBrandingSchema = z.object({
 export const getPublicPortalBranding = createServerFn({ method: "GET" }).handler(async () => {
   try {
     const { eq } = await import("drizzle-orm");
-    const { db } = await import("../db/index.ts");
+    const { db, hasPostgresConfig } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
-    const { ensurePortalInitialized } = await import("./auth.server.ts");
 
-    await ensurePortalInitialized();
+    if (!hasPostgresConfig()) {
+      return {
+        ok: true as const,
+        branding: { ...DEFAULT_PORTAL_BRANDING },
+      };
+    }
+
     const rows = await db
       .select({ data: schema.portalState.data })
       .from(schema.portalState)
@@ -1065,11 +1048,8 @@ export const savePortalBrandingConfig = createServerFn({ method: "POST" })
     const { eq } = await import("drizzle-orm");
     const { db } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
-    const { ensurePortalInitialized, stripCredentialsFromUsers, toPublicUser } =
-      await import("./auth.server.ts");
-    const { createSeedState } = await import("./seed.ts");
-
-    await ensurePortalInitialized();
+    const { stripCredentialsFromUsers, toPublicUser } = await import("./auth.server.ts");
+    const { createEmptyPortalState } = await import("./seed.ts");
 
     const [stateRows, userRows] = await Promise.all([
       db
@@ -1080,7 +1060,7 @@ export const savePortalBrandingConfig = createServerFn({ method: "POST" })
       db.select().from(schema.users),
     ]);
 
-    const existing = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+    const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
     const canConfigure =
       context.role === "super_admin" ||
       context.role === "admin" ||

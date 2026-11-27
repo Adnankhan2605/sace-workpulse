@@ -5,9 +5,9 @@ import { renderErrorPage } from "./lib/error-page";
 
 if (typeof process !== "undefined" && process.env["TSS_PRERENDERING"] !== "true") {
   void import("./lib/auth.server.ts")
-    .then((m) => m.ensurePortalInitialized())
+    .then((m) => m.initializeDatabaseOnStartup())
     .catch((err) => {
-      console.error("[SACE Startup] Portal initialization failed:", err);
+      console.error("[SACE Startup] PostgreSQL startup check failed:", err);
     });
 }
 
@@ -133,6 +133,17 @@ async function handleBattalionApi(request: Request): Promise<Response | null> {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
 
+  const { hasPostgresConfig } = await import("./db/index.ts");
+  if (!hasPostgresConfig()) {
+    return json(
+      {
+        ok: false,
+        error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+      },
+      503,
+    );
+  }
+
   const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
   const auth = await resolveAuthenticatedUserFromRequest(request);
   if (!auth) {
@@ -166,7 +177,11 @@ async function handleBattalionApi(request: Request): Promise<Response | null> {
     return json({ ok: false, error: "Method not allowed." }, 405);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Request failed.";
-    const status = message.startsWith("Forbidden:") ? 403 : 400;
+    const status = message.startsWith("Forbidden:")
+      ? 403
+      : message.startsWith("Database")
+        ? 503
+        : 400;
     return json({ ok: false, error: message }, status);
   }
 }
@@ -246,6 +261,17 @@ async function handleMomApi(request: Request): Promise<Response | null> {
         isAuthenticatedUser: Boolean(auth),
         accessToken: url.searchParams.get("access"),
       });
+    }
+
+    const { hasPostgresConfig } = await import("./db/index.ts");
+    if (!hasPostgresConfig()) {
+      return json(
+        {
+          ok: false,
+          error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+        },
+        503,
+      );
     }
 
     const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
@@ -421,6 +447,17 @@ async function handleUsersApi(request: Request): Promise<Response | null> {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
 
+  const { hasPostgresConfig } = await import("./db/index.ts");
+  if (!hasPostgresConfig()) {
+    return json(
+      {
+        ok: false,
+        error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+      },
+      503,
+    );
+  }
+
   const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
   const auth = await resolveAuthenticatedUserFromRequest(request);
   if (!auth) {
@@ -538,6 +575,17 @@ async function handleSmtpApi(request: Request): Promise<Response | null> {
       headers: { "content-type": "application/json; charset=utf-8" },
     });
 
+  const { hasPostgresConfig } = await import("./db/index.ts");
+  if (!hasPostgresConfig()) {
+    return json(
+      {
+        ok: false,
+        error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+      },
+      503,
+    );
+  }
+
   const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
   const auth = await resolveAuthenticatedUserFromRequest(request);
   if (!auth) {
@@ -654,6 +702,17 @@ async function handleOwnerApi(request: Request): Promise<Response | null> {
       status,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
+
+  const { hasPostgresConfig } = await import("./db/index.ts");
+  if (!hasPostgresConfig()) {
+    return json(
+      {
+        ok: false,
+        error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+      },
+      503,
+    );
+  }
 
   const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
   const auth = await resolveAuthenticatedUserFromRequest(request);
@@ -775,7 +834,13 @@ async function handleOwnerApi(request: Request): Promise<Response | null> {
 async function handleAuthApi(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
-  if (path !== "/api/auth/login" && path !== "/api/auth/logout" && path !== "/api/auth/session") {
+  if (
+    path !== "/api/auth/login" &&
+    path !== "/api/auth/logout" &&
+    path !== "/api/auth/session" &&
+    path !== "/api/auth/bootstrap-status" &&
+    path !== "/api/auth/setup-admin"
+  ) {
     return null;
   }
 
@@ -790,6 +855,51 @@ async function handleAuthApi(request: Request): Promise<Response | null> {
     });
 
   try {
+    if (path === "/api/auth/bootstrap-status") {
+      if (request.method !== "GET") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+      const { getAuthBootstrapStatus } = await import("./lib/auth.server.ts");
+      const status = await getAuthBootstrapStatus();
+      return json(status, 200);
+    }
+
+    if (path === "/api/auth/setup-admin") {
+      if (request.method !== "POST") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+      const originHeader = request.headers.get("origin");
+      const hostHeader =
+        request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+      if (originHeader && hostHeader) {
+        try {
+          if (new URL(originHeader).host !== hostHeader) {
+            return json({ ok: false, error: "Forbidden: Cross-origin request rejected." }, 403);
+          }
+        } catch {
+          return json({ ok: false, error: "Forbidden: Invalid origin header." }, 403);
+        }
+      }
+
+      let payload: unknown;
+      try {
+        payload = await request.json();
+      } catch {
+        return json({ ok: false, error: "Invalid setup request." }, 400);
+      }
+
+      const { setupInitialSuperAdminRecord, buildSessionSetCookieHeader } =
+        await import("./lib/auth.server.ts");
+      const result = await setupInitialSuperAdminRecord(payload, request);
+      if (!result.ok) {
+        return json({ ok: false, error: result.error }, result.status);
+      }
+
+      return json({ ok: true, user: result.user, sessionToken: result.sessionToken }, 201, {
+        "set-cookie": buildSessionSetCookieHeader(result.sessionToken, request),
+      });
+    }
+
     if (path === "/api/auth/login") {
       if (request.method !== "POST") {
         return json({ ok: false, error: "Method not allowed." }, 405);
@@ -843,9 +953,69 @@ async function handleAuthApi(request: Request): Promise<Response | null> {
   }
 }
 
+async function handleDbHealthApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/db/health") {
+    return null;
+  }
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    });
+
+  if (request.method !== "GET") {
+    return json({ ok: false, error: "Method not allowed." }, 405);
+  }
+
+  const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
+  const auth = await resolveAuthenticatedUserFromRequest(request);
+  if (!auth) {
+    return json({ ok: false, error: "Unauthorized: Please sign in to continue." }, 401);
+  }
+
+  const { getDatabasePersistenceHealth } = await import("./db/index.ts");
+  const health = await getDatabasePersistenceHealth();
+  return json(health, 200);
+}
+
+async function handleHealthApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/health") {
+    return null;
+  }
+  const { hasPostgresConfig } = await import("./db/index.ts");
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      status: "healthy",
+      databaseConfigured: hasPostgresConfig(),
+    }),
+    {
+      status: 200,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    },
+  );
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const healthResponse = await handleHealthApi(request);
+      if (healthResponse) {
+        return withSecurityHeaders(healthResponse);
+      }
+      const dbHealthResponse = await handleDbHealthApi(request);
+      if (dbHealthResponse) {
+        return withSecurityHeaders(dbHealthResponse);
+      }
       const authResponse = await handleAuthApi(request);
       if (authResponse) {
         return withSecurityHeaders(authResponse);

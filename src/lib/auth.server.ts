@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
 import { deleteCookie, getCookie, getRequest, setCookie } from "@tanstack/react-start/server";
-import { eq, or, sql } from "drizzle-orm";
+import { eq, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, hasPostgresConfig } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import { checkRateLimit, getClientIpFromRequest } from "./rate-limit.server.ts";
-import { DEFAULT_ADMIN_PERMS, createSeedState } from "./seed.ts";
+import { PASSWORD_POLICY_ERROR, isStrongPassword } from "./security.ts";
+import { DEFAULT_ADMIN_PERMS, createEmptyPortalState } from "./seed.ts";
 import type { AppState, Perm, Role, User } from "./types.ts";
 
 export const SESSION_COOKIE_NAME = "sace_session";
@@ -363,145 +364,54 @@ async function ensurePostgresTablesExist(): Promise<void> {
   `);
 }
 
-async function runPortalInitialization(): Promise<void> {
+async function runStartupMigration(): Promise<void> {
+  const { assertPersistentStorageReady } = await import("../db/index.ts");
+  await assertPersistentStorageReady();
   await ensurePostgresTablesExist();
 
   const seedPassword = (process.env["SEED_DEFAULT_PASSWORD"] ?? "").trim();
-  const fallbackInitialHash = hashPassword(seedPassword || "SacePortal@2026!");
+  const initialSuperAdminHash = hashPassword(seedPassword || "SacePortal@2026!");
 
-  const [existingUsers, existingStateRows] = await Promise.all([
-    db.select().from(schema.users),
-    db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
-  ]);
+  // Strictly non-destructive: insert default Super Admin only if email does not exist yet
+  await db
+    .insert(schema.users)
+    .values({
+      id: "u-superadmin",
+      fullName: "Super Admin",
+      username: SUPER_ADMIN_USERNAME,
+      email: SUPER_ADMIN_EMAIL,
+      password: initialSuperAdminHash,
+      designation: "Super Admin",
+      department: "Executive",
+      role: "super_admin",
+      reportingAdminId: null,
+      active: true,
+      dailyVision: null,
+      avatarColor: "#6b21a8",
+      avatarUrl: null,
+      casualBalance: 20,
+      sickBalance: 12,
+    })
+    .onConflictDoNothing({ target: schema.users.email });
 
-  const existingStateData = existingStateRows[0]?.data as AppState | undefined;
-  const stateUsers = Array.isArray(existingStateData?.users) ? existingStateData.users : [];
-
-  // 1. If both users table and portal_state are brand-new/empty, seed initial default records once
-  //    using ON CONFLICT DO NOTHING (strictly non-destructive).
-  if (existingUsers.length === 0 && stateUsers.length === 0) {
-    const seedState = createSeedState();
-    for (const u of seedState.users) {
-      await db
-        .insert(schema.users)
-        .values({
-          id: u.id,
-          fullName: u.fullName,
-          username: u.username.toLowerCase(),
-          email: u.email.toLowerCase(),
-          password: fallbackInitialHash,
-          designation: u.designation,
-          department: u.department,
-          role: u.role,
-          reportingAdminId: u.reportingAdminId,
-          active: u.active,
-          dailyVision: u.dailyVision,
-          avatarColor: u.avatarColor,
-          avatarUrl: u.avatarUrl ?? null,
-          casualBalance: u.casualBalance,
-          sickBalance: u.sickBalance,
-        })
-        .onConflictDoNothing();
-    }
-  } else if (stateUsers.length > 0) {
-    // 2. Non-destructively restore any user present in portal_state that is missing from users table
-    const existingIds = new Set(existingUsers.map((u) => u.id));
-    const existingEmails = new Set(existingUsers.map((u) => u.email.toLowerCase()));
-    for (const u of stateUsers) {
-      if (!u?.id || !u?.email) continue;
-      if (existingIds.has(u.id) || existingEmails.has(u.email.toLowerCase())) continue;
-      await db
-        .insert(schema.users)
-        .values({
-          id: u.id,
-          fullName: u.fullName,
-          username: (u.username || u.email).toLowerCase(),
-          email: u.email.toLowerCase(),
-          password: fallbackInitialHash,
-          designation: u.designation || "Team Member",
-          department: u.department || "General",
-          role: u.role || "member",
-          reportingAdminId: u.reportingAdminId ?? null,
-          active: u.active ?? true,
-          dailyVision: u.dailyVision ?? null,
-          avatarColor: u.avatarColor || "#8B5CF6",
-          avatarUrl: u.avatarUrl ?? null,
-          casualBalance: u.casualBalance ?? 12,
-          sickBalance: u.sickBalance ?? 10,
-        })
-        .onConflictDoNothing();
-    }
-  }
-
-  // 3. Ensure system Super Admin exists without deleting, truncating, or overwriting existing accounts.
-  const existingSuperAdmin = await db
-    .select()
-    .from(schema.users)
-    .where(sql`lower(${schema.users.email}) = ${SUPER_ADMIN_EMAIL}`)
-    .limit(1);
-
-  if (!existingSuperAdmin[0]) {
-    await db
-      .insert(schema.users)
-      .values({
-        id: "u-superadmin",
-        fullName: "Super Admin",
-        username: SUPER_ADMIN_USERNAME,
-        email: SUPER_ADMIN_EMAIL,
-        password: fallbackInitialHash,
-        designation: "Super Admin",
-        department: "Executive",
-        role: "super_admin",
-        reportingAdminId: null,
-        active: true,
-        dailyVision: null,
-        avatarColor: "#6b21a8",
-        avatarUrl: null,
-        casualBalance: 20,
-        sickBalance: 12,
-      })
-      .onConflictDoNothing();
-  } else if (seedPassword) {
-    await db
-      .update(schema.users)
-      .set({
-        password: hashPassword(seedPassword),
-        role: "super_admin",
-        active: true,
-      })
-      .where(eq(schema.users.id, existingSuperAdmin[0].id));
-  }
-
-  // 4. Synchronize portal_state with current users table non-destructively
-  const allDbUsers = await db.select().from(schema.users);
-  const publicUsers = stripCredentialsFromUsers(allDbUsers.map(toPublicUser));
-
-  if (!existingStateData) {
-    const initial = createSeedState();
-    initial.users = publicUsers;
-    await db
-      .insert(schema.portalState)
-      .values({ id: PORTAL_STATE_ID, data: initial })
-      .onConflictDoNothing();
-  } else {
-    await db
-      .update(schema.portalState)
-      .set({
-        data: {
-          ...existingStateData,
-          users: publicUsers,
-        },
-        updatedAt: new Date(),
-      })
-      .where(eq(schema.portalState.id, PORTAL_STATE_ID));
-  }
+  // Ensure initial empty portal_state row exists if brand new (never overwrite existing state)
+  await db
+    .insert(schema.portalState)
+    .values({ id: PORTAL_STATE_ID, data: createEmptyPortalState() })
+    .onConflictDoNothing({ target: schema.portalState.id });
 }
 
-export async function ensurePortalInitialized(): Promise<void> {
+export async function initializeDatabaseOnStartup(): Promise<void> {
+  if (!hasPostgresConfig()) {
+    console.info(
+      "[SACE Startup] Waiting for DATABASE_URL in Workspace Secrets; startup table initialization skipped.",
+    );
+    return;
+  }
   if (!global._portalInitPromise) {
-    global._portalInitPromise = runPortalInitialization().catch((err) => {
+    global._portalInitPromise = runStartupMigration().catch((err) => {
       global._portalInitPromise = undefined;
-      throw err;
+      console.error("[SACE Startup] Non-fatal PostgreSQL initialization error:", err);
     });
   }
   await global._portalInitPromise;
@@ -542,19 +452,28 @@ export async function resolveAuthenticatedUserFromRequest(req?: Request | null):
     // Outside TanStack request context
   }
 
+  if (!hasPostgresConfig()) {
+    return null;
+  }
+
   // 1. Check signed HttpOnly portal session cookie OR x-sace-session signed header
   const candidateToken = startCookie || cookieToken || sessionHeader;
   if (candidateToken) {
     const sub = verifySignedToken(candidateToken);
     if (sub) {
-      const rows = await db.select().from(schema.users).where(eq(schema.users.id, sub)).limit(1);
-      const userRow = rows[0];
-      if (userRow && userRow.active) {
-        return {
-          userId: userRow.id,
-          role: (userRow.role as Role) || "member",
-          user: toPublicUser(userRow),
-        };
+      try {
+        const rows = await db.select().from(schema.users).where(eq(schema.users.id, sub)).limit(1);
+        const userRow = rows[0];
+        if (userRow && userRow.active) {
+          return {
+            userId: userRow.id,
+            role: (userRow.role as Role) || "member",
+            user: toPublicUser(userRow),
+          };
+        }
+      } catch (err) {
+        console.error("[SACE Auth] Session user lookup failed:", err);
+        return null;
       }
     }
   }
@@ -567,26 +486,31 @@ export async function resolveAuthenticatedUserFromRequest(req?: Request | null):
     if (authHeader.startsWith("Bearer ")) {
       const token = authHeader.slice("Bearer ".length).trim();
       if (token && token.split(".").length === 3) {
-        const { createClient } = await import("@supabase/supabase-js");
-        const supabase = createClient(supaUrl, supaKey, {
-          auth: { persistSession: false, autoRefreshToken: false },
-          global: { headers: { Authorization: `Bearer ${token}` } },
-        });
-        const { data, error } = await supabase.auth.getUser(token);
-        if (!error && data?.user?.id) {
-          const rows = await db
-            .select()
-            .from(schema.users)
-            .where(eq(schema.users.id, data.user.id))
-            .limit(1);
-          const userRow = rows[0];
-          if (userRow && userRow.active) {
-            return {
-              userId: userRow.id,
-              role: (userRow.role as Role) || "member",
-              user: toPublicUser(userRow),
-            };
+        try {
+          const { createClient } = await import("@supabase/supabase-js");
+          const supabase = createClient(supaUrl, supaKey, {
+            auth: { persistSession: false, autoRefreshToken: false },
+            global: { headers: { Authorization: `Bearer ${token}` } },
+          });
+          const { data, error } = await supabase.auth.getUser(token);
+          if (!error && data?.user?.id) {
+            const rows = await db
+              .select()
+              .from(schema.users)
+              .where(eq(schema.users.id, data.user.id))
+              .limit(1);
+            const userRow = rows[0];
+            if (userRow && userRow.active) {
+              return {
+                userId: userRow.id,
+                role: (userRow.role as Role) || "member",
+                user: toPublicUser(userRow),
+              };
+            }
           }
+        } catch (err) {
+          console.error("[SACE Auth] Bearer session lookup failed:", err);
+          return null;
         }
       }
     }
@@ -625,7 +549,7 @@ export const LoginInputSchema = z.object({
 
 export type PortalLoginResult =
   | { ok: true; status: 200; user: User; sessionToken: string }
-  | { ok: false; status: 400 | 401 | 403 | 429 | 500; error: string };
+  | { ok: false; status: 400 | 401 | 403 | 429 | 500 | 503; error: string };
 
 export async function authenticatePortalLogin(
   rawInput: unknown,
@@ -637,6 +561,14 @@ export async function authenticatePortalLogin(
       ok: false,
       status: 400,
       error: parsed.error.issues[0]?.message ?? "Enter your username or email and password.",
+    };
+  }
+
+  if (!hasPostgresConfig()) {
+    return {
+      ok: false,
+      status: 503,
+      error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
     };
   }
 
@@ -657,7 +589,7 @@ export async function authenticatePortalLogin(
   }
 
   try {
-    await ensurePortalInitialized();
+    await initializeDatabaseOnStartup();
 
     const rows = await db
       .select()
@@ -673,15 +605,6 @@ export async function authenticatePortalLogin(
 
     const userRow = rows[0];
     if (!userRow) {
-      const anyUser = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
-      if (anyUser.length === 0 && !process.env["SEED_DEFAULT_PASSWORD"]) {
-        return {
-          ok: false,
-          status: 400,
-          error:
-            "No portal accounts initialized yet. Configure SEED_DEFAULT_PASSWORD in environment secrets and retry.",
-        };
-      }
       return { ok: false, status: 401, error: "Invalid username/email or password." };
     }
 
@@ -715,6 +638,170 @@ export async function authenticatePortalLogin(
       ok: false,
       status: 500,
       error: "Unable to sign in right now. Please try again in a moment.",
+    };
+  }
+}
+
+export async function getAuthBootstrapStatus(): Promise<{
+  ok: true;
+  databaseConfigured: boolean;
+  needsAdminSetup: boolean;
+}> {
+  if (!hasPostgresConfig()) {
+    return { ok: true, databaseConfigured: false, needsAdminSetup: false };
+  }
+  try {
+    await initializeDatabaseOnStartup();
+    const countRows = await db
+      .select({ cnt: sql<number>`count(*)::int` })
+      .from(schema.users)
+      .where(ne(schema.users.id, "u-superadmin"));
+    const nonSystemCount = Number(countRows[0]?.cnt ?? 0);
+    return {
+      ok: true,
+      databaseConfigured: true,
+      needsAdminSetup: nonSystemCount === 0,
+    };
+  } catch (err) {
+    console.error("[SACE Auth] Bootstrap status check failed:", err);
+    return { ok: true, databaseConfigured: true, needsAdminSetup: false };
+  }
+}
+
+export const SetupInitialAdminSchema = z.object({
+  fullName: z.string().trim().min(2, "Enter your full name.").max(100),
+  email: z.string().trim().email("Enter a valid email address.").max(160),
+  password: z
+    .string()
+    .min(12, PASSWORD_POLICY_ERROR)
+    .max(128)
+    .refine(isStrongPassword, { message: PASSWORD_POLICY_ERROR }),
+  designation: z.string().trim().max(100).optional(),
+  department: z.string().trim().max(100).optional(),
+});
+
+export type SetupInitialAdminResult =
+  | { ok: true; status: 201; user: User; sessionToken: string }
+  | { ok: false; status: 400 | 403 | 409 | 429 | 500 | 503; error: string };
+
+export async function setupInitialSuperAdminRecord(
+  rawInput: unknown,
+  req?: Request | null,
+): Promise<SetupInitialAdminResult> {
+  if (!hasPostgresConfig()) {
+    return {
+      ok: false,
+      status: 503,
+      error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+    };
+  }
+
+  const clientIp = getClientIpFromRequest(req);
+  const rateCheck = checkRateLimit(`setup-admin:${clientIp}`, {
+    limit: 10,
+    windowMs: 15 * 60 * 1000,
+    message: "Too many setup attempts. Please wait a few minutes before retrying.",
+  });
+  if (!rateCheck.allowed) {
+    return { ok: false, status: 429, error: rateCheck.message };
+  }
+
+  const parsed = SetupInitialAdminSchema.safeParse(rawInput);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      status: 400,
+      error: parsed.error.issues[0]?.message ?? "Please complete all required fields.",
+    };
+  }
+
+  try {
+    await initializeDatabaseOnStartup();
+    const email = parsed.data.email.trim().toLowerCase();
+    const base = (email.split("@")[0] ?? "admin").replace(/[^a-z0-9._-]/g, "") || "admin";
+
+    const createdUser = await db.transaction(async (tx) => {
+      const countRows = await tx
+        .select({ cnt: sql<number>`count(*)::int` })
+        .from(schema.users)
+        .where(ne(schema.users.id, "u-superadmin"));
+      if (Number(countRows[0]?.cnt ?? 0) > 0) {
+        return { conflict: "already_claimed" as const };
+      }
+
+      const existingEmail = await tx
+        .select({ id: schema.users.id })
+        .from(schema.users)
+        .where(sql`lower(${schema.users.email}) = ${email}`)
+        .limit(1);
+      if (existingEmail.length > 0) {
+        return { conflict: "email_exists" as const };
+      }
+
+      let username = base;
+      for (let i = 1; i < 50; i += 1) {
+        const taken = await tx
+          .select({ id: schema.users.id })
+          .from(schema.users)
+          .where(sql`lower(${schema.users.username}) = ${username}`)
+          .limit(1);
+        if (taken.length === 0) break;
+        username = `${base}${i}`;
+      }
+
+      const newId = `u-${crypto.randomUUID().slice(0, 12)}`;
+      const [inserted] = await tx
+        .insert(schema.users)
+        .values({
+          id: newId,
+          fullName: parsed.data.fullName.trim(),
+          username,
+          email,
+          password: hashPassword(parsed.data.password),
+          designation: (parsed.data.designation ?? "").trim() || "Super Admin",
+          department: (parsed.data.department ?? "").trim() || "Executive",
+          role: "super_admin",
+          reportingAdminId: null,
+          active: true,
+          dailyVision: null,
+          avatarColor: "#6b21a8",
+          avatarUrl: null,
+          casualBalance: 20,
+          sickBalance: 12,
+        })
+        .returning();
+
+      return { conflict: null, row: inserted };
+    });
+
+    if (createdUser.conflict === "already_claimed") {
+      return {
+        ok: false,
+        status: 403,
+        error: "Initial Super Admin setup is already completed. Please sign in with your account.",
+      };
+    }
+    if (createdUser.conflict === "email_exists" || !createdUser.row) {
+      return {
+        ok: false,
+        status: 409,
+        error: "An account with this email already exists. Please sign in instead.",
+      };
+    }
+
+    const sessionToken = createSignedToken(createdUser.row.id);
+    return {
+      ok: true,
+      status: 201,
+      user: toPublicUser(createdUser.row),
+      sessionToken,
+    };
+  } catch (err) {
+    console.error("[SACE Auth] Initial Super Admin setup failed:", err);
+    return {
+      ok: false,
+      status: 500,
+      error: "Unable to create the initial Super Admin account right now.",
     };
   }
 }

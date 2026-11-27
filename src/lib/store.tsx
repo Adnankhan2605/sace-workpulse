@@ -100,6 +100,11 @@ interface Ctx {
   dbConnected: boolean;
   syncToCloud: () => Promise<void>;
   login: (identifier: string, password: string) => Promise<Result>;
+  setupInitialAdmin: (input: {
+    fullName: string;
+    email: string;
+    password: string;
+  }) => Promise<Result>;
   logout: () => Promise<void>;
   update: (fn: (draft: AppState) => void) => void;
   punchInWithLocation: (
@@ -586,6 +591,66 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return { ok: true };
       } catch {
         return { ok: false, error: "Unable to sign in right now. Please try again in a moment." };
+      }
+    },
+
+    setupInitialAdmin: async ({ fullName, email, password }) => {
+      try {
+        const response = await fetch("/api/auth/setup-admin", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fullName: fullName.trim(),
+            email: email.trim(),
+            password,
+          }),
+        });
+
+        let res: {
+          ok?: boolean;
+          user?: User;
+          sessionToken?: string;
+          error?: string;
+        } | null = null;
+        try {
+          res = (await response.json()) as {
+            ok?: boolean;
+            user?: User;
+            sessionToken?: string;
+            error?: string;
+          };
+        } catch {
+          res = null;
+        }
+
+        if (!response.ok || !res?.ok || !res.user) {
+          return {
+            ok: false,
+            error: sanitizeAuthBannerError(
+              res?.error,
+              "Unable to create the Super Admin account right now.",
+            ),
+          };
+        }
+
+        const authUser = res.user;
+        setClientSessionToken(res.sessionToken ?? null);
+        setUsers((prev) =>
+          prev.some((u) => u.id === authUser.id)
+            ? prev.map((u) => (u.id === authUser.id ? authUser : u))
+            : [...prev, authUser],
+        );
+        setSessionUserId(authUser.id);
+        setReady(true);
+
+        await loadScopedState();
+        return { ok: true };
+      } catch {
+        return {
+          ok: false,
+          error: "Unable to create the Super Admin account right now. Please try again.",
+        };
       }
     },
 

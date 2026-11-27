@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { assertPersistentStorageReady, db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import { isUserScheduleConfigured } from "./accounts.schemas.ts";
-import { ensurePortalInitialized, stripCredentialsFromUsers, toPublicUser } from "./auth.server.ts";
+import { stripCredentialsFromUsers, toPublicUser } from "./auth.server.ts";
 import { isPresenceExpired } from "./battalion.ts";
 import { DEFAULT_OFFICE_GEOFENCE, calculateShiftScheduleForPunchIn } from "./geofence.ts";
 import {
@@ -27,7 +27,7 @@ import {
   type UpdateInitiativeInput,
 } from "./owner.schemas.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
-import { createSeedState, dateKey } from "./seed.ts";
+import { createEmptyPortalState, dateKey } from "./seed.ts";
 import type {
   AppState,
   AttendanceRecord,
@@ -146,7 +146,7 @@ async function appendOwnerAudit(actorId: string, action: string, detail: string)
         .limit(1),
       db.select().from(schema.users),
     ]);
-    const existing = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+    const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
     const publicUsers = stripCredentialsFromUsers(userRows.map(toPublicUser));
     const entry: AuditLog = {
       id: `aud-${crypto.randomUUID().slice(0, 10)}`,
@@ -247,7 +247,6 @@ export async function getOwnerAnalyticsRecord(
 ): Promise<OwnerAnalyticsResponse> {
   assertSuperAdminCaller(callerRole);
   assertRateLimit(`owner-analytics:${callerId}`, { limit: 120, windowMs: 60_000 });
-  await ensurePortalInitialized();
 
   const [stateRows, userRows, companyRows, initiativeRows] = await Promise.all([
     db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
@@ -256,7 +255,7 @@ export async function getOwnerAnalyticsRecord(
     db.select().from(schema.initiatives),
   ]);
 
-  const portalState = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+  const portalState = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
   const allPublicUsers = userRows.map(toPublicUser);
 
   // Strictly exclude hidden system accounts (like superadmin@sace.com)
@@ -691,7 +690,6 @@ export async function createCompanyRecord(
   const data = CreateCompanySchema.parse(rawInput);
 
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const allUsers = (await db.select().from(schema.users))
     .map(toPublicUser)
@@ -748,7 +746,6 @@ export async function updateCompanyRecord(
   const data = UpdateCompanySchema.parse(rawInput);
 
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const existingRows = await db
     .select()
@@ -827,7 +824,6 @@ export async function deleteCompanyRecord(
   if (!cleanId) throw new Error("Company ID is required.");
 
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const existingRows = await db
     .select()
@@ -860,7 +856,6 @@ export async function createInitiativeRecord(
   const data = CreateInitiativeSchema.parse(rawInput);
 
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const [stateRows, userRows, companyRows] = await Promise.all([
     db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
@@ -868,7 +863,7 @@ export async function createInitiativeRecord(
     db.select().from(schema.companies),
   ]);
 
-  const portalState = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+  const portalState = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
   const allUsers = userRows.map(toPublicUser).filter((u) => !isHiddenSystemAccount(u));
   const userById = new Map(allUsers.map((u) => [u.id, u]));
   const companyById = new Map(companyRows.map((c) => [c.id, c]));
@@ -929,7 +924,6 @@ export async function updateInitiativeRecord(
   const data = UpdateInitiativeSchema.parse(rawInput);
 
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const existingRows = await db
     .select()
@@ -947,7 +941,7 @@ export async function updateInitiativeRecord(
     db.select().from(schema.companies),
   ]);
 
-  const portalState = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+  const portalState = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
   const allUsers = userRows.map(toPublicUser).filter((u) => !isHiddenSystemAccount(u));
   const userById = new Map(allUsers.map((u) => [u.id, u]));
   const companyById = new Map(companyRows.map((c) => [c.id, c]));
@@ -1011,7 +1005,6 @@ export async function deleteInitiativeRecord(
   if (!cleanId) throw new Error("Initiative ID is required.");
 
   await assertPersistentStorageReady();
-  await ensurePortalInitialized();
 
   const existingRows = await db
     .select()

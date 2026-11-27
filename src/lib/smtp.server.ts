@@ -5,7 +5,6 @@ import nodemailer from "nodemailer";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
-import { ensurePortalInitialized } from "./auth.server.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
 import {
   SaveSmtpConfigSchema,
@@ -252,7 +251,6 @@ function buildTransporter(params: {
 }
 
 export async function getMySmtpConfigRecord(userId: string): Promise<PublicSmtpConfig> {
-  await ensurePortalInitialized();
   const rows = await db
     .select()
     .from(schema.userSmtpConfigs)
@@ -292,7 +290,6 @@ export async function saveMySmtpConfigRecord(
 ): Promise<{ ok: true; config: PublicSmtpConfig }> {
   assertRateLimit(`smtp-save:${userId}`, { limit: 25, windowMs: 60_000 });
   const data = SaveSmtpConfigSchema.parse(rawInput);
-  await ensurePortalInitialized();
 
   const safeHost = await assertSafeSmtpHost(data.host);
   const existingRows = await db
@@ -379,7 +376,6 @@ export async function testMySmtpConfigRecord(
     assertRateLimit(`smtp-test:${userId}`, { limit: 15, windowMs: 5 * 60_000 });
     const data = TestSmtpConfigSchema.parse(rawInput);
     hostForMessage = data.host;
-    await ensurePortalInitialized();
 
     const safeHost = await assertSafeSmtpHost(data.host);
     hostForMessage = safeHost;
@@ -500,7 +496,6 @@ export async function testMySmtpConfigRecord(
 export async function deleteMySmtpConfigRecord(
   userId: string,
 ): Promise<{ ok: true; config: PublicSmtpConfig }> {
-  await ensurePortalInitialized();
   const rows = await db
     .select()
     .from(schema.userSmtpConfigs)
@@ -595,7 +590,6 @@ export async function saveMyTeamsConfigRecord(
 ): Promise<{ ok: true; config: PublicSmtpConfig }> {
   assertRateLimit(`teams-save:${userId}`, { limit: 25, windowMs: 60_000 });
   const data = SaveTeamsConfigSchema.parse(rawInput);
-  await ensurePortalInitialized();
 
   const existingRows = await db
     .select()
@@ -670,7 +664,6 @@ export async function testMyTeamsConfigRecord(
   try {
     assertRateLimit(`teams-test:${userId}`, { limit: 15, windowMs: 5 * 60_000 });
     const data = TestTeamsConfigSchema.parse(rawInput);
-    await ensurePortalInitialized();
 
     const existingRows = await db
       .select()
@@ -763,7 +756,6 @@ export async function testMyTeamsConfigRecord(
 export async function deleteMyTeamsConfigRecord(
   userId: string,
 ): Promise<{ ok: true; config: PublicSmtpConfig }> {
-  await ensurePortalInitialized();
   const rows = await db
     .select()
     .from(schema.userSmtpConfigs)
@@ -891,7 +883,6 @@ export async function saveMyWhatsAppConfigRecord(
 ): Promise<{ ok: true; config: PublicSmtpConfig }> {
   assertRateLimit(`whatsapp-save:${userId}`, { limit: 25, windowMs: 60_000 });
   const data = SaveWhatsAppConfigSchema.parse(rawInput);
-  await ensurePortalInitialized();
 
   const existingRows = await db
     .select()
@@ -1012,7 +1003,6 @@ export async function testMyWhatsAppConfigRecord(
   try {
     assertRateLimit(`whatsapp-test:${userId}`, { limit: 15, windowMs: 5 * 60_000 });
     const data = TestWhatsAppConfigSchema.parse(rawInput);
-    await ensurePortalInitialized();
 
     const existingRows = await db
       .select()
@@ -1130,7 +1120,6 @@ export async function testMyWhatsAppConfigRecord(
 export async function deleteMyWhatsAppConfigRecord(
   userId: string,
 ): Promise<{ ok: true; config: PublicSmtpConfig }> {
-  await ensurePortalInitialized();
   const rows = await db
     .select()
     .from(schema.userSmtpConfigs)
@@ -1173,7 +1162,6 @@ export async function sendEmailViaUserSmtp(
   userId: string,
   payload: { to: string; subject: string; text: string; html?: string; replyTo?: string },
 ): Promise<{ ok: true; messageId: string }> {
-  await ensurePortalInitialized();
   const rows = await db
     .select()
     .from(schema.userSmtpConfigs)
@@ -1222,7 +1210,6 @@ export async function sendPortalMailAndTeamsAlert(options: {
   notifySuperAdminTeams?: boolean;
   notifySuperAdminWhatsApp?: boolean;
 }): Promise<{ emailSent: boolean; teamsSent: boolean; whatsappSent: boolean }> {
-  await ensurePortalInitialized();
   const [smtpRows, userRows] = await Promise.all([
     db.select().from(schema.userSmtpConfigs),
     db.select().from(schema.users),

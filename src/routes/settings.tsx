@@ -2,21 +2,28 @@ import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
+  CheckCircle2,
   Clock,
+  Database,
   ImagePlus,
   Loader2,
+  Lock,
   Mail,
   MapPin,
   Navigation,
   Palette,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
   User as UserIcon,
+  Users,
 } from "lucide-react";
 import { AppShell, Initials, PageHeader, roleLabel } from "@/components/app-shell";
 import { PortalBrandingSettings } from "@/components/portal-branding-settings";
 import { SmtpIntegrationSettings } from "@/components/smtp-integration-settings";
+import { getClientSessionToken } from "@/lib/portal-session-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -86,6 +93,53 @@ function SettingsPage() {
   );
   const [geoBusy, setGeoBusy] = React.useState(false);
   const [detectingOfficeId, setDetectingOfficeId] = React.useState<string | null>(null);
+
+  const [dbHealth, setDbHealth] = React.useState<{
+    connected: boolean;
+    persistent: boolean;
+    mode: "External PostgreSQL (Persistent)" | "Local/Ephemeral";
+    sslEnabled: boolean;
+    userCount: number;
+    databaseHost: string | null;
+    checkedAt: string;
+    message: string;
+  } | null>(null);
+  const [dbHealthLoading, setDbHealthLoading] = React.useState(true);
+
+  const refreshDbHealth = React.useCallback(async () => {
+    setDbHealthLoading(true);
+    try {
+      const token = getClientSessionToken();
+      const res = await fetch("/api/db/health", {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          ...(token ? { "x-sace-session": token } : {}),
+        },
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          connected: boolean;
+          persistent: boolean;
+          mode: "External PostgreSQL (Persistent)" | "Local/Ephemeral";
+          sslEnabled: boolean;
+          userCount: number;
+          databaseHost: string | null;
+          checkedAt: string;
+          message: string;
+        };
+        setDbHealth(data);
+      }
+    } catch {
+      // Ignore network error
+    } finally {
+      setDbHealthLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void refreshDbHealth();
+  }, [refreshDbHealth, state.users.length]);
 
   const fileRef = React.useRef<HTMLInputElement>(null);
 
@@ -387,6 +441,113 @@ function SettingsPage() {
                 Update password
               </Button>
             </form>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-2xl border-border">
+          <CardContent className="space-y-4 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={cn(
+                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl",
+                    dbHealth?.connected && dbHealth?.persistent
+                      ? "bg-emerald-500/10 text-emerald-600"
+                      : "bg-amber-500/10 text-amber-600",
+                  )}
+                >
+                  <Database className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-foreground">
+                    System Status &amp; Database Persistence
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Live verification of external PostgreSQL account storage
+                  </p>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={dbHealthLoading}
+                onClick={() => void refreshDbHealth()}
+                className="h-8 gap-1.5 text-xs"
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", dbHealthLoading && "animate-spin")} />
+                Check Now
+              </Button>
+            </div>
+
+            <div
+              className={cn(
+                "flex items-center justify-between gap-3 rounded-xl border p-3.5",
+                dbHealth?.connected && dbHealth?.persistent
+                  ? "border-emerald-500/30 bg-emerald-500/5"
+                  : "border-amber-500/30 bg-amber-500/5",
+              )}
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                {dbHealth?.connected && dbHealth?.persistent ? (
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                ) : (
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                )}
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-foreground truncate">
+                    {dbHealthLoading && !dbHealth
+                      ? "Checking database connection..."
+                      : (dbHealth?.mode ?? "Local/Ephemeral")}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground truncate">
+                    {dbHealth?.databaseHost
+                      ? `Host: ${dbHealth.databaseHost}`
+                      : (dbHealth?.message ??
+                        "Configure process.env.DATABASE_URL in Workspace Secrets.")}
+                  </p>
+                </div>
+              </div>
+              <span
+                className={cn(
+                  "shrink-0 rounded-md border px-2 py-0.5 text-[11px] font-semibold",
+                  dbHealth?.connected && dbHealth?.persistent
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700"
+                    : "border-amber-500/30 bg-amber-500/10 text-amber-700",
+                )}
+              >
+                {dbHealth?.connected && dbHealth?.persistent ? "Persistent" : "Action Needed"}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-border bg-muted/25 p-3">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Users className="h-3.5 w-3.5 text-primary" />
+                  <span>Persisted Accounts (`users`)</span>
+                </div>
+                <p className="mt-1 text-xl font-bold tabular-nums text-foreground">
+                  {dbHealthLoading && !dbHealth ? "—" : (dbHealth?.userCount ?? 0)}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-border bg-muted/25 p-3">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Lock className="h-3.5 w-3.5 text-primary" />
+                  <span>TLS / SSL Connection</span>
+                </div>
+                <p className="mt-1 text-sm font-semibold text-foreground">
+                  {dbHealth?.sslEnabled ? "SSL Enabled" : "Not Active"}
+                </p>
+              </div>
+            </div>
+
+            {dbHealth?.checkedAt && (
+              <p className="text-[11px] text-muted-foreground tabular-nums">
+                Last verified {new Date(dbHealth.checkedAt).toLocaleTimeString()} · In-memory and
+                local file fallbacks disabled.
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>

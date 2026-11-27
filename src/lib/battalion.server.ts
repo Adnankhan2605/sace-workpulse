@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
-import { ensurePortalInitialized, stripCredentialsFromUsers, toPublicUser } from "./auth.server.ts";
+import { stripCredentialsFromUsers, toPublicUser } from "./auth.server.ts";
 import {
   CreateBattalionSchema,
   DeleteBattalionSchema,
@@ -12,7 +12,7 @@ import {
   type UpdatePresenceInput,
 } from "./battalion.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
-import { createSeedState } from "./seed.ts";
+import { createEmptyPortalState } from "./seed.ts";
 import type {
   AppState,
   AuditLog,
@@ -34,12 +34,11 @@ export {
 };
 
 async function loadPortalStateAndUsers() {
-  await ensurePortalInitialized();
   const [stateRows, userRows] = await Promise.all([
     db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
     db.select().from(schema.users),
   ]);
-  const existing = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+  const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
   const publicUsers = userRows.map(toPublicUser);
   return { existing, publicUsers };
 }

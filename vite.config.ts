@@ -38,6 +38,15 @@ function esmDirnameFixPlugin(): Plugin {
   };
 }
 
+if (
+  typeof process !== "undefined" &&
+  process.argv.includes("build") &&
+  !process.argv.includes("--mode") &&
+  process.env["NODE_ENV"] !== "production"
+) {
+  process.env["NODE_ENV"] = "production";
+}
+
 export default defineConfig({
   nitro: {
     preset: "node-server",

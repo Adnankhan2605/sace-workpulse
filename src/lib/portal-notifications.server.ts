@@ -4,12 +4,11 @@ import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import {
   createSignedToken,
-  ensurePortalInitialized,
   stripCredentialsFromUsers,
   toPublicUser,
   verifySignedToken,
 } from "./auth.server.ts";
-import { createSeedState } from "./seed.ts";
+import { createEmptyPortalState } from "./seed.ts";
 import { sendPortalMailAndTeamsAlert } from "./smtp.server.ts";
 import type {
   AppNotification,
@@ -75,7 +74,6 @@ export function verifyLeaveEmailActionToken(
 }
 
 async function resolveSuperAdminRecipients(): Promise<string[]> {
-  await ensurePortalInitialized();
   const [userRows, smtpRows] = await Promise.all([
     db.select().from(schema.users),
     db.select().from(schema.userSmtpConfigs),
@@ -110,7 +108,6 @@ export async function notifySuperAdminsOnPunchIn(params: {
   record: AttendanceRecord;
 }): Promise<void> {
   try {
-    await ensurePortalInitialized();
     const [userRows, superAdminEmails] = await Promise.all([
       db.select().from(schema.users).where(eq(schema.users.id, params.userId)).limit(1),
       resolveSuperAdminRecipients(),
@@ -582,12 +579,11 @@ export async function handleLeaveEmailDecisionRequest(request: Request): Promise
     });
   }
 
-  await ensurePortalInitialized();
   const [stateRows, userRows] = await Promise.all([
     db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
     db.select().from(schema.users),
   ]);
-  const currentState = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+  const currentState = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
   const leaveIndex = (currentState.leaves ?? []).findIndex((l) => l.id === leaveId);
   if (leaveIndex < 0) {
     return renderLeaveDecisionPage({

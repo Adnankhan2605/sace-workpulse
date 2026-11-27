@@ -7,7 +7,6 @@ import { db } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
 import {
   createMediaAccessToken,
-  ensurePortalInitialized,
   stripCredentialsFromUsers,
   toPublicUser,
   verifyMediaAccessToken,
@@ -19,7 +18,7 @@ import {
   sanitizeMomHtml,
 } from "./mom.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
-import { createSeedState } from "./seed.ts";
+import { createEmptyPortalState } from "./seed.ts";
 import type {
   AppNotification,
   AppState,
@@ -280,12 +279,11 @@ function parseJsonResponse<T>(rawText: string | undefined): T {
 }
 
 async function loadPortalStateAndUsers() {
-  await ensurePortalInitialized();
   const [stateRows, userRows] = await Promise.all([
     db.select().from(schema.portalState).where(eq(schema.portalState.id, PORTAL_STATE_ID)).limit(1),
     db.select().from(schema.users),
   ]);
-  const existing = (stateRows[0]?.data as AppState | undefined) ?? createSeedState();
+  const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
   const publicUsers = userRows.map(toPublicUser);
   return { existing, publicUsers };
 }
