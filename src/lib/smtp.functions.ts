@@ -13,6 +13,8 @@ export type { PublicSmtpConfig, SaveSmtpConfigInput, TestSmtpConfigInput };
 export const getMySmtpConfig = createServerFn({ method: "GET" })
   .middleware([requirePortalAuth])
   .handler(async ({ context }) => {
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "settings_integrations", "view");
     const { getMySmtpConfigRecord } = await import("./smtp.server.ts");
     const config = await getMySmtpConfigRecord(context.userId);
     return { ok: true as const, config };
@@ -22,6 +24,8 @@ export const saveMySmtpConfig = createServerFn({ method: "POST" })
   .middleware([requirePortalAuth])
   .inputValidator((raw: unknown) => SaveSmtpConfigSchema.parse(raw))
   .handler(async ({ data, context }) => {
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "settings_integrations", "edit");
     const { saveMySmtpConfigRecord } = await import("./smtp.server.ts");
     return saveMySmtpConfigRecord(context.userId, data);
   });
@@ -30,6 +34,8 @@ export const testMySmtpConfig = createServerFn({ method: "POST" })
   .middleware([requirePortalAuth])
   .inputValidator((raw: unknown) => TestSmtpConfigSchema.parse(raw))
   .handler(async ({ data, context }) => {
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "settings_integrations", "edit");
     const { testMySmtpConfigRecord } = await import("./smtp.server.ts");
     return testMySmtpConfigRecord(context.userId, data);
   });
@@ -37,6 +43,8 @@ export const testMySmtpConfig = createServerFn({ method: "POST" })
 export const deleteMySmtpConfig = createServerFn({ method: "POST" })
   .middleware([requirePortalAuth])
   .handler(async ({ context }) => {
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "settings_integrations", "edit");
     const { deleteMySmtpConfigRecord } = await import("./smtp.server.ts");
     return deleteMySmtpConfigRecord(context.userId);
   });

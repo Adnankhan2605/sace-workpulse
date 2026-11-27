@@ -54,7 +54,8 @@ async function processLogoFile(file: File): Promise<string> {
 }
 
 export function PortalBrandingSettings() {
-  const { branding, savePortalBranding, log } = useApp();
+  const { branding, canEditModule, savePortalBranding, log } = useApp();
+  const canEditSettings = canEditModule("settings_integrations");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const [logoUrl, setLogoUrl] = React.useState<string | null>(branding.logoUrl);
@@ -85,7 +86,7 @@ export function PortalBrandingSettings() {
   const previewAccent = normalizeHexColor(accentColor, DEFAULT_PORTAL_BRANDING.accentColor);
 
   async function handleLogoUpload(file: File | undefined) {
-    if (!file) return;
+    if (!file || !canEditSettings) return;
     setBusy(true);
     try {
       const processed = await processLogoFile(file);
@@ -103,6 +104,7 @@ export function PortalBrandingSettings() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEditSettings) return;
     const cleanName = organisationName.trim();
     if (!cleanName) {
       toast.error("Organisation Name is required.");
@@ -166,46 +168,50 @@ export function PortalBrandingSettings() {
             </div>
 
             <div className="space-y-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                className="hidden"
-                onChange={(e) => void handleLogoUpload(e.target.files?.[0])}
-              />
-              <div className="flex flex-wrap items-center gap-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => fileInputRef.current?.click()}
-                  className="gap-1.5"
-                >
-                  <Upload className="h-3.5 w-3.5" />
-                  Upload Logo
-                </Button>
-                {logoUrl === "" ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setLogoUrl(null)}
-                    className="text-xs font-medium text-primary hover:underline cursor-pointer"
-                  >
-                    Restore default logo
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setLogoUrl("")}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-destructive hover:underline cursor-pointer"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    Remove logo
-                  </button>
-                )}
-              </div>
+              {canEditSettings && (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    className="hidden"
+                    onChange={(e) => void handleLogoUpload(e.target.files?.[0])}
+                  />
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="gap-1.5"
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Upload Logo
+                    </Button>
+                    {logoUrl === "" ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setLogoUrl(null)}
+                        className="text-xs font-medium text-primary hover:underline cursor-pointer"
+                      >
+                        Restore default logo
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setLogoUrl("")}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-destructive hover:underline cursor-pointer"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                        Remove logo
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
               <p className="text-[11px] text-muted-foreground">
                 Recommended: transparent background, at least 200 × 60 px
               </p>
@@ -238,6 +244,7 @@ export function PortalBrandingSettings() {
                 onChange={(e) => setOrganisationName(e.target.value)}
                 placeholder="South Australian College of English"
                 maxLength={120}
+                disabled={busy || !canEditSettings}
                 required
               />
             </div>
@@ -250,6 +257,7 @@ export function PortalBrandingSettings() {
                 onChange={(e) => setTagline(e.target.value)}
                 placeholder="The Australian Experience of a Lifetime"
                 maxLength={180}
+                disabled={busy || !canEditSettings}
               />
               <p className="text-[11px] text-muted-foreground">
                 Optional short descriptor displayed under the logo
@@ -283,7 +291,8 @@ export function PortalBrandingSettings() {
                   aria-label="Primary Colour Picker"
                   value={previewPrimary}
                   onChange={(e) => setPrimaryColor(e.target.value)}
-                  className="h-9 w-11 shrink-0 cursor-pointer rounded-lg border border-border bg-background p-0.5"
+                  disabled={busy || !canEditSettings}
+                  className="h-9 w-11 shrink-0 cursor-pointer rounded-lg border border-border bg-background p-0.5 disabled:cursor-not-allowed disabled:opacity-60"
                 />
                 <Input
                   id="brand-primary-hex"
@@ -291,6 +300,7 @@ export function PortalBrandingSettings() {
                   onChange={(e) => setPrimaryColor(e.target.value)}
                   placeholder="#520380"
                   maxLength={7}
+                  disabled={busy || !canEditSettings}
                   className="w-36 font-mono text-sm"
                 />
                 <span
@@ -311,7 +321,8 @@ export function PortalBrandingSettings() {
                   aria-label="Accent Colour Picker"
                   value={previewAccent}
                   onChange={(e) => setAccentColor(e.target.value)}
-                  className="h-9 w-11 shrink-0 cursor-pointer rounded-lg border border-border bg-background p-0.5"
+                  disabled={busy || !canEditSettings}
+                  className="h-9 w-11 shrink-0 cursor-pointer rounded-lg border border-border bg-background p-0.5 disabled:cursor-not-allowed disabled:opacity-60"
                 />
                 <Input
                   id="brand-accent-hex"
@@ -319,6 +330,7 @@ export function PortalBrandingSettings() {
                   onChange={(e) => setAccentColor(e.target.value)}
                   placeholder="#0ea5e9"
                   maxLength={7}
+                  disabled={busy || !canEditSettings}
                   className="w-36 font-mono text-sm"
                 />
                 <span
@@ -391,10 +403,11 @@ export function PortalBrandingSettings() {
                 <button
                   key={font}
                   type="button"
+                  disabled={busy || !canEditSettings}
                   onClick={() => setFontFamily(font)}
                   style={{ fontFamily: BRAND_FONT_CSS[font] }}
                   className={cn(
-                    "rounded-xl border px-3 py-2.5 text-center text-sm transition-all cursor-pointer",
+                    "rounded-xl border px-3 py-2.5 text-center text-sm transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-60",
                     selected
                       ? "border-2 border-primary bg-primary/5 font-semibold text-foreground shadow-xs"
                       : "border-border bg-card text-muted-foreground hover:border-foreground/30 hover:text-foreground",
@@ -430,15 +443,17 @@ export function PortalBrandingSettings() {
           <span />
         )}
 
-        <Button
-          type="submit"
-          disabled={busy}
-          className="gap-2 px-5 text-white shadow-sm"
-          style={{ backgroundColor: previewPrimary }}
-        >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-          {busy ? "Saving…" : "Save Branding"}
-        </Button>
+        {canEditSettings && (
+          <Button
+            type="submit"
+            disabled={busy}
+            className="gap-2 px-5 text-white shadow-sm"
+            style={{ backgroundColor: previewPrimary }}
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            {busy ? "Saving…" : "Save Branding"}
+          </Button>
+        )}
       </div>
     </form>
   );

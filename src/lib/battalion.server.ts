@@ -11,6 +11,7 @@ import {
   type CreateBattalionInput,
   type UpdatePresenceInput,
 } from "./battalion.ts";
+import { assertModuleAccess } from "./permissions.server.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
 import { createEmptyPortalState } from "./seed.ts";
 import type {
@@ -56,7 +57,9 @@ async function persistPortalState(nextState: AppState) {
 export async function saveUserPresenceRecord(
   callerId: string,
   rawInput: unknown,
+  callerRole: Role = "member",
 ): Promise<{ ok: true; presence: UserPresence }> {
+  await assertModuleAccess(callerId, callerRole, "battalion", "edit");
   assertRateLimit(`presence:${callerId}`, { limit: 60, windowMs: 60_000 });
   const parsed = UpdatePresenceSchema.parse(rawInput);
 
@@ -94,12 +97,16 @@ export async function saveUserPresenceRecord(
   return { ok: true, presence };
 }
 
-export async function fetchPopulatedBattalions(callerId: string): Promise<{
+export async function fetchPopulatedBattalions(
+  callerId: string,
+  callerRole: Role = "member",
+): Promise<{
   ok: true;
   battalions: PopulatedBattalion[];
   members: BattalionMember[];
   myPresence: UserPresence | null;
 }> {
+  await assertModuleAccess(callerId, callerRole, "battalion", "view");
   assertRateLimit(`battalions-read:${callerId}`, { limit: 120, windowMs: 60_000 });
   const { existing, publicUsers } = await loadPortalStateAndUsers();
   const presenceMap = existing.userPresence ?? {};
@@ -143,9 +150,7 @@ export async function createBattalionRecord(
   callerRole: Role,
   rawInput: unknown,
 ): Promise<{ ok: true; battalion: PopulatedBattalion }> {
-  if (callerRole !== "admin" && callerRole !== "super_admin") {
-    throw new Error("Forbidden: Only Admin and Super Admin users can create a Battalion.");
-  }
+  await assertModuleAccess(callerId, callerRole, "battalion", "edit");
 
   assertRateLimit(`battalions-write:${callerId}`, { limit: 30, windowMs: 60_000 });
   const parsed = CreateBattalionSchema.parse(rawInput);
@@ -215,9 +220,7 @@ export async function deleteBattalionRecord(
   callerRole: Role,
   rawInput: unknown,
 ): Promise<{ ok: true }> {
-  if (callerRole !== "admin" && callerRole !== "super_admin") {
-    throw new Error("Forbidden: Only Admin and Super Admin users can delete a Battalion.");
-  }
+  await assertModuleAccess(callerId, callerRole, "battalion", "edit");
 
   assertRateLimit(`battalions-write:${callerId}`, { limit: 30, windowMs: 60_000 });
   const parsed = DeleteBattalionSchema.parse(rawInput);

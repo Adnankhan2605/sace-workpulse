@@ -373,7 +373,10 @@ const EMPTY_INITIATIVE_FORM: InitiativeFormState = {
 };
 
 function OwnerDashboardPage() {
-  const { me } = useApp();
+  const { me, canViewModule, canEditModule } = useApp();
+  const canViewOwner = canViewModule("owner_dashboard") || canViewModule("companies_initiatives");
+  const canEditCompanies = canEditModule("companies_initiatives");
+  const canEditUserManagement = canEditModule("user_management");
   const [data, setData] = React.useState<OwnerAnalyticsResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
@@ -437,12 +440,12 @@ function OwnerDashboardPage() {
   }, []);
 
   React.useEffect(() => {
-    if (me?.role === "super_admin") {
+    if (canViewOwner) {
       void loadAnalytics(false);
     } else {
       setLoading(false);
     }
-  }, [me?.role, loadAnalytics]);
+  }, [canViewOwner, loadAnalytics]);
 
   const employees = React.useMemo(() => data?.employees ?? [], [data?.employees]);
   const companies = React.useMemo(() => data?.companies ?? [], [data?.companies]);
@@ -521,7 +524,7 @@ function OwnerDashboardPage() {
   }, [employees, companyMemberFilter]);
 
   if (!me) return null;
-  if (me.role !== "super_admin") {
+  if (!canViewOwner) {
     return <NoAccess />;
   }
 
@@ -711,18 +714,22 @@ function OwnerDashboardPage() {
               <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
               Refresh
             </Button>
-            <Button variant="outline" size="sm" onClick={openAddCompany} className="gap-1.5">
-              <Plus className="h-3.5 w-3.5" />
-              Add Company
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => openAddInitiative()}
-              className="gap-1.5 bg-[#5B00A3] text-white hover:bg-[#490083]"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add Initiative
-            </Button>
+            {canEditCompanies && (
+              <>
+                <Button variant="outline" size="sm" onClick={openAddCompany} className="gap-1.5">
+                  <Plus className="h-3.5 w-3.5" />
+                  Add Company
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => openAddInitiative()}
+                  className="gap-1.5 bg-[#5B00A3] text-white hover:bg-[#490083]"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add Initiative
+                </Button>
+              </>
+            )}
           </>
         }
       />
@@ -925,10 +932,17 @@ function OwnerDashboardPage() {
                     Organization units, leads, and assigned workforce
                   </p>
                 </div>
-                <Button size="sm" variant="outline" onClick={openAddCompany} className="h-8 gap-1">
-                  <Plus className="h-3.5 w-3.5" />
-                  Add
-                </Button>
+                {canEditCompanies && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={openAddCompany}
+                    className="h-8 gap-1"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add
+                  </Button>
+                )}
               </CardHeader>
               <CardContent className="p-4">
                 {companies.length === 0 ? (
@@ -937,10 +951,12 @@ function OwnerDashboardPage() {
                     title="No companies added yet"
                     description="Create companies or business verticals to group staff and track strategic initiatives."
                     action={
-                      <Button size="sm" onClick={openAddCompany} className="gap-1.5">
-                        <Plus className="h-3.5 w-3.5" />
-                        Add Company
-                      </Button>
+                      canEditCompanies ? (
+                        <Button size="sm" onClick={openAddCompany} className="gap-1.5">
+                          <Plus className="h-3.5 w-3.5" />
+                          Add Company
+                        </Button>
+                      ) : undefined
                     }
                   />
                 ) : (
@@ -972,32 +988,34 @@ function OwnerDashboardPage() {
                               {company.leadName ? ` · Lead: ${company.leadName}` : ""}
                             </p>
                           </div>
-                          <div className="flex shrink-0 items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                              onClick={() => openEditCompany(company)}
-                              title={`Edit ${company.name}`}
-                            >
-                              <Edit3 className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-muted-foreground hover:text-rose-600"
-                              onClick={() =>
-                                setDeleteTarget({
-                                  kind: "company",
-                                  id: company.id,
-                                  label: company.name,
-                                })
-                              }
-                              title={`Delete ${company.name}`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
+                          {canEditCompanies && (
+                            <div className="flex shrink-0 items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                onClick={() => openEditCompany(company)}
+                                title={`Edit ${company.name}`}
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-rose-600"
+                                onClick={() =>
+                                  setDeleteTarget({
+                                    kind: "company",
+                                    id: company.id,
+                                    label: company.name,
+                                  })
+                                }
+                                title={`Delete ${company.name}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          )}
                         </div>
                         {company.description && (
                           <p className="text-xs text-muted-foreground line-clamp-2">
@@ -1023,13 +1041,15 @@ function OwnerDashboardPage() {
                             <span className="text-[11px] text-muted-foreground">
                               Avg {company.avgInitiativeProgress}%
                             </span>
-                            <button
-                              type="button"
-                              onClick={() => openAddInitiative(company.id)}
-                              className="text-[11px] font-medium text-[#5B00A3] hover:underline dark:text-purple-300"
-                            >
-                              + Initiative
-                            </button>
+                            {canEditCompanies && (
+                              <button
+                                type="button"
+                                onClick={() => openAddInitiative(company.id)}
+                                className="text-[11px] font-medium text-[#5B00A3] hover:underline dark:text-purple-300"
+                              >
+                                + Initiative
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1081,14 +1101,16 @@ function OwnerDashboardPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                  <Button
-                    size="sm"
-                    onClick={() => openAddInitiative()}
-                    className="h-8 gap-1 bg-[#5B00A3] text-white hover:bg-[#490083]"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    Add
-                  </Button>
+                  {canEditCompanies && (
+                    <Button
+                      size="sm"
+                      onClick={() => openAddInitiative()}
+                      className="h-8 gap-1 bg-[#5B00A3] text-white hover:bg-[#490083]"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add
+                    </Button>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="p-4">
@@ -1107,10 +1129,12 @@ function OwnerDashboardPage() {
                     }
                     action={
                       initiatives.length === 0 ? (
-                        <Button size="sm" onClick={() => openAddInitiative()} className="gap-1.5">
-                          <Plus className="h-3.5 w-3.5" />
-                          Add Initiative
-                        </Button>
+                        canEditCompanies ? (
+                          <Button size="sm" onClick={() => openAddInitiative()} className="gap-1.5">
+                            <Plus className="h-3.5 w-3.5" />
+                            Add Initiative
+                          </Button>
+                        ) : undefined
                       ) : (
                         <Button
                           size="sm"
@@ -1150,32 +1174,34 @@ function OwnerDashboardPage() {
                               </p>
                             )}
                           </div>
-                          <div className="flex shrink-0 items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                              onClick={() => openEditInitiative(init)}
-                              title={`Edit ${init.title}`}
-                            >
-                              <Edit3 className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-muted-foreground hover:text-rose-600"
-                              onClick={() =>
-                                setDeleteTarget({
-                                  kind: "initiative",
-                                  id: init.id,
-                                  label: init.title,
-                                })
-                              }
-                              title={`Delete ${init.title}`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
+                          {canEditCompanies && (
+                            <div className="flex shrink-0 items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                onClick={() => openEditInitiative(init)}
+                                title={`Edit ${init.title}`}
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-rose-600"
+                                onClick={() =>
+                                  setDeleteTarget({
+                                    kind: "initiative",
+                                    id: init.id,
+                                    label: init.title,
+                                  })
+                                }
+                                title={`Delete ${init.title}`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-3">
                           <div className="flex-1">
@@ -2088,16 +2114,18 @@ function OwnerDashboardPage() {
                       </p>
                       <UserPolicyBadge user={selectedEmployee} />
                     </div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setPolicyEditEmployee(selectedEmployee)}
-                      className="h-8 gap-1.5 text-xs"
-                    >
-                      <Edit3 className="h-3.5 w-3.5 text-[#5B00A3]" />
-                      Edit Schedule & Policy
-                    </Button>
+                    {canEditUserManagement && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setPolicyEditEmployee(selectedEmployee)}
+                        className="h-8 gap-1.5 text-xs"
+                      >
+                        <Edit3 className="h-3.5 w-3.5 text-[#5B00A3]" />
+                        Edit Schedule & Policy
+                      </Button>
+                    )}
                   </div>
 
                   {/* Battalions & Companies */}

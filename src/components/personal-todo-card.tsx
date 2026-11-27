@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   CheckSquare,
   Plus,
@@ -11,11 +11,34 @@ import {
   X,
   Palette,
   Clock,
+  Volume2,
+  VolumeX,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  createNoteApi,
+  deleteNoteApi,
+  fetchNotesApi,
+  formatReminderLabel,
+  notifyNotesChanged,
+  subscribeNotesChanged,
+  toDatetimeLocalValue,
+  updateNoteApi,
+  type InkColorId,
+  type PaperThemeId,
+  type PortalNote,
+} from "@/lib/notes-client";
+import {
+  isGlobalReminderSoundEnabled,
+  playTestChime,
+  requestDesktopNotificationPermission,
+  setGlobalReminderSoundEnabled,
+  unlockReminderAudio,
+} from "@/lib/reminder-sound";
 import { useApp } from "@/lib/store";
 
 interface TodoItem {
@@ -25,22 +48,23 @@ interface TodoItem {
   createdAt: string;
 }
 
-type PaperThemeId = "butter" | "lavender" | "mint" | "peach" | "sky";
-type InkColorId = "charcoal" | "purple" | "crimson" | "cobalt" | "emerald" | "amber" | "magenta";
-
-interface NotepadPoint {
-  id: string;
-  text: string;
-  inkId: InkColorId;
-  reminderAt?: string; // ISO or datetime-local string
+interface LegacyNotepadPoint {
+  id?: string;
+  text?: string;
+  inkId?: InkColorId;
+  reminderAt?: string;
   reminderFired?: boolean;
-  createdAt: string;
 }
 
-interface NotepadState {
+interface LegacyNotepadState {
+  paperId?: PaperThemeId;
+  activeInkId?: InkColorId;
+  points?: LegacyNotepadPoint[];
+}
+
+interface NotepadPrefs {
   paperId: PaperThemeId;
   activeInkId: InkColorId;
-  points: NotepadPoint[];
 }
 
 const PAPER_THEMES: Array<{
@@ -178,44 +202,52 @@ function getPaperMeta(paperId: PaperThemeId) {
   return PAPER_THEMES.find((p) => p.id === paperId) ?? PAPER_THEMES[0]!;
 }
 
-function formatReminderLabel(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function isValidPaperId(val: unknown): val is PaperThemeId {
+  return PAPER_THEMES.some((p) => p.id === val);
 }
 
-function toDatetimeLocalDefault(): string {
-  const d = new Date(Date.now() + 30 * 60 * 1000);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function isValidInkId(val: unknown): val is InkColorId {
+  return INK_COLORS.some((c) => c.id === val);
 }
 
 export default function PersonalTodoCard() {
-  const { me } = useApp();
+  const { me, canEditModule } = useApp();
+  const canEditDashboard = canEditModule("dashboard");
+  const userId = me?.id ?? null;
+
   const [mode, setMode] = useState<"todo" | "notepad">("todo");
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [inputText, setInputText] = useState("");
 
-  const [notepad, setNotepad] = useState<NotepadState>({
+  // Notepad PostgreSQL-backed state
+  const [notes, setNotes] = useState<PortalNote[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesSaving, setNotesSaving] = useState(false);
+  const [prefs, setPrefs] = useState<NotepadPrefs>({
     paperId: "butter",
     activeInkId: "purple",
-    points: [],
   });
+
+  // Composer inputs
+  const [noteTitleInput, setNoteTitleInput] = useState("");
   const [noteInput, setNoteInput] = useState("");
+  const [showComposerReminder, setShowComposerReminder] = useState(false);
+  const [composerReminderAt, setComposerReminderAt] = useState("");
+
+  // Inline reminder editor for existing notes
   const [editingReminderId, setEditingReminderId] = useState<string | null>(null);
   const [reminderDraft, setReminderDraft] = useState("");
+  const [soundAlertOn, setSoundAlertOn] = useState(true);
+  const [testingSound, setTestingSound] = useState(false);
 
   // Swipe gesture state
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const [swipeHint, setSwipeHint] = useState<"left" | "right" | null>(null);
 
-  const todoStorageKey = me ? `sace_todos_${me.id}` : null;
-  const notepadStorageKey = me ? `sace_notepad_${me.id}` : null;
+  const todoStorageKey = userId ? `sace_todos_${userId}` : null;
+  const legacyNotepadStorageKey = userId ? `sace_notepad_${userId}` : null;
+  const notepadPrefsKey = userId ? `sace_notepad_prefs_${userId}` : null;
+  const notepadMigratedKey = userId ? `sace_notepad_migrated_${userId}` : null;
 
   // Load Personal To-Do List
   useEffect(() => {
@@ -250,47 +282,151 @@ export default function PersonalTodoCard() {
     }
   }, [todoStorageKey]);
 
-  // Load Colorful Notepad
+  // Load visual preferences (paper theme & ink) + global sound toggle
   useEffect(() => {
-    if (!notepadStorageKey) {
-      setNotepad({ paperId: "butter", activeInkId: "purple", points: [] });
+    if (!userId || !notepadPrefsKey) {
+      setPrefs({ paperId: "butter", activeInkId: "purple" });
+      setSoundAlertOn(true);
       return;
     }
+
+    setSoundAlertOn(isGlobalReminderSoundEnabled(userId));
+
     try {
-      const saved = localStorage.getItem(notepadStorageKey);
-      if (saved) {
-        const parsed = JSON.parse(saved) as Partial<NotepadState>;
-        setNotepad({
-          paperId: parsed.paperId ?? "butter",
-          activeInkId: parsed.activeInkId ?? "purple",
-          points: Array.isArray(parsed.points) ? parsed.points : [],
+      const savedPrefs = localStorage.getItem(notepadPrefsKey);
+      if (savedPrefs) {
+        const parsed = JSON.parse(savedPrefs) as Partial<NotepadPrefs>;
+        setPrefs({
+          paperId: isValidPaperId(parsed.paperId) ? parsed.paperId : "butter",
+          activeInkId: isValidInkId(parsed.activeInkId) ? parsed.activeInkId : "purple",
         });
-      } else {
-        const initial: NotepadState = {
-          paperId: "butter",
-          activeInkId: "purple",
-          points: [
-            {
-              id: "note-1",
-              text: "Follow up on priority client deliverables",
-              inkId: "purple",
-              createdAt: new Date().toISOString(),
-            },
-            {
-              id: "note-2",
-              text: "Share sprint notes with the squad before EOD",
-              inkId: "cobalt",
-              createdAt: new Date().toISOString(),
-            },
-          ],
-        };
-        setNotepad(initial);
-        localStorage.setItem(notepadStorageKey, JSON.stringify(initial));
+        return;
+      }
+
+      if (legacyNotepadStorageKey) {
+        const legacyRaw = localStorage.getItem(legacyNotepadStorageKey);
+        if (legacyRaw) {
+          const legacyParsed = JSON.parse(legacyRaw) as LegacyNotepadState;
+          const nextPrefs: NotepadPrefs = {
+            paperId: isValidPaperId(legacyParsed.paperId) ? legacyParsed.paperId : "butter",
+            activeInkId: isValidInkId(legacyParsed.activeInkId)
+              ? legacyParsed.activeInkId
+              : "purple",
+          };
+          setPrefs(nextPrefs);
+          localStorage.setItem(notepadPrefsKey, JSON.stringify(nextPrefs));
+          return;
+        }
       }
     } catch {
-      setNotepad({ paperId: "butter", activeInkId: "purple", points: [] });
+      // Fallback to defaults
     }
-  }, [notepadStorageKey]);
+
+    setPrefs({ paperId: "butter", activeInkId: "purple" });
+  }, [userId, notepadPrefsKey, legacyNotepadStorageKey]);
+
+  // Sync global sound preference changes across tabs/components
+  useEffect(() => {
+    if (!userId) return;
+    const onPrefChange = () => {
+      setSoundAlertOn(isGlobalReminderSoundEnabled(userId));
+    };
+    window.addEventListener("sace:reminder-sound-pref", onPrefChange);
+    return () => window.removeEventListener("sace:reminder-sound-pref", onPrefChange);
+  }, [userId]);
+
+  const updatePrefs = (next: NotepadPrefs) => {
+    setPrefs(next);
+    if (!notepadPrefsKey) return;
+    try {
+      localStorage.setItem(notepadPrefsKey, JSON.stringify(next));
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  // Load notes from PostgreSQL (+ one-time safe migration from legacy localStorage)
+  const loadNotes = useCallback(async () => {
+    if (!userId) {
+      setNotes([]);
+      return;
+    }
+    setNotesLoading(true);
+    try {
+      let fetched = await fetchNotesApi();
+
+      if (
+        fetched.length === 0 &&
+        canEditDashboard &&
+        legacyNotepadStorageKey &&
+        notepadMigratedKey &&
+        localStorage.getItem(notepadMigratedKey) !== "1"
+      ) {
+        try {
+          const legacyRaw = localStorage.getItem(legacyNotepadStorageKey);
+          if (legacyRaw) {
+            const parsed = JSON.parse(legacyRaw) as LegacyNotepadState;
+            const legacyPoints = Array.isArray(parsed.points) ? parsed.points : [];
+            const paperId: PaperThemeId = isValidPaperId(parsed.paperId)
+              ? parsed.paperId
+              : "butter";
+            const created: PortalNote[] = [];
+
+            for (const pt of legacyPoints) {
+              const content = (pt.text ?? "").trim();
+              if (!content) continue;
+              let reminderIso: string | null = null;
+              if (pt.reminderAt) {
+                const parsedDate = new Date(pt.reminderAt);
+                if (!Number.isNaN(parsedDate.getTime())) {
+                  reminderIso = parsedDate.toISOString();
+                }
+              }
+              const note = await createNoteApi({
+                title: "",
+                content,
+                inkId: isValidInkId(pt.inkId) ? pt.inkId : "purple",
+                paperId,
+                soundEnabled: true,
+                reminderAt: reminderIso,
+              });
+              created.push(note);
+            }
+
+            if (created.length > 0) {
+              fetched = created;
+              notifyNotesChanged(fetched);
+            }
+          }
+          localStorage.setItem(notepadMigratedKey, "1");
+        } catch {
+          // Non-fatal migration fallback
+        }
+      }
+
+      setNotes(fetched);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not load notepad notes.");
+    } finally {
+      setNotesLoading(false);
+    }
+  }, [userId, canEditDashboard, legacyNotepadStorageKey, notepadMigratedKey]);
+
+  useEffect(() => {
+    void loadNotes();
+  }, [loadNotes]);
+
+  // Listen to updates triggered by ReminderWatcher (Snooze / Dismiss / Triggered)
+  useEffect(() => {
+    const unsubscribe = subscribeNotesChanged((updated) => {
+      if (updated) {
+        setNotes(updated);
+      } else {
+        void loadNotes();
+      }
+    });
+    return unsubscribe;
+  }, [loadNotes]);
 
   const saveTodos = (updated: TodoItem[]) => {
     setTodos(updated);
@@ -301,60 +437,6 @@ export default function PersonalTodoCard() {
       console.error(e);
     }
   };
-
-  const saveNotepad = (updated: NotepadState) => {
-    setNotepad(updated);
-    if (!notepadStorageKey) return;
-    try {
-      localStorage.setItem(notepadStorageKey, JSON.stringify(updated));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  // Poll reminders every 10 seconds so due reminders fire live
-  useEffect(() => {
-    if (!notepadStorageKey) return;
-
-    const checkDueReminders = () => {
-      const nowMs = Date.now();
-      let changed = false;
-      const firedItems: Array<{ index: number; text: string }> = [];
-
-      setNotepad((prev) => {
-        const nextPoints = prev.points.map((pt, idx) => {
-          if (!pt.reminderAt || pt.reminderFired) return pt;
-          const dueMs = new Date(pt.reminderAt).getTime();
-          if (!Number.isNaN(dueMs) && dueMs <= nowMs) {
-            changed = true;
-            firedItems.push({ index: idx + 1, text: pt.text });
-            return { ...pt, reminderFired: true };
-          }
-          return pt;
-        });
-
-        if (!changed) return prev;
-        const updated = { ...prev, points: nextPoints };
-        try {
-          localStorage.setItem(notepadStorageKey, JSON.stringify(updated));
-        } catch (e) {
-          console.error(e);
-        }
-        return updated;
-      });
-
-      firedItems.forEach((item) => {
-        toast.info(`Notepad Reminder #${item.index}`, {
-          description: item.text,
-          duration: 8000,
-        });
-      });
-    };
-
-    checkDueReminders();
-    const timer = window.setInterval(checkDueReminders, 10_000);
-    return () => window.clearInterval(timer);
-  }, [notepadStorageKey]);
 
   // Todo handlers
   const handleAddTodo = (e: React.FormEvent) => {
@@ -378,45 +460,111 @@ export default function PersonalTodoCard() {
     saveTodos(todos.filter((t) => t.id !== id));
   };
 
-  // Notepad handlers
-  const handleAddPoint = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!me || !noteInput.trim()) return;
-    const newPoint: NotepadPoint = {
-      id: globalThis.crypto?.randomUUID?.() ?? `pt-${Date.now()}`,
-      text: noteInput.trim(),
-      inkId: notepad.activeInkId,
-      createdAt: new Date().toISOString(),
-    };
-    saveNotepad({
-      ...notepad,
-      points: [...notepad.points, newPoint],
-    });
-    setNoteInput("");
+  // Sound controls
+  const handleToggleGlobalSound = () => {
+    void unlockReminderAudio();
+    const next = !soundAlertOn;
+    setSoundAlertOn(next);
+    setGlobalReminderSoundEnabled(next, userId);
+    toast.success(next ? "Reminder sound alerts enabled." : "Reminder sound alerts muted.");
   };
 
-  const handleDeletePoint = (id: string) => {
+  const handleTestSound = async () => {
+    setTestingSound(true);
+    try {
+      const res = await playTestChime();
+      await requestDesktopNotificationPermission();
+      if (res.ok) {
+        toast.success("Notification chime played & browser audio unlocked!");
+      } else {
+        toast.error(res.error || "Could not play sound preview.");
+      }
+    } finally {
+      setTestingSound(false);
+    }
+  };
+
+  // Notepad DB handlers
+  const handleAddNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!me || !canEditDashboard) return;
+    const trimmedContent = noteInput.trim();
+    if (!trimmedContent) return;
+
+    let reminderIso: string | null = null;
+    if (showComposerReminder && composerReminderAt) {
+      const parsedMs = new Date(composerReminderAt).getTime();
+      if (Number.isNaN(parsedMs)) {
+        toast.error("Please pick a valid reminder date and time.");
+        return;
+      }
+      reminderIso = new Date(parsedMs).toISOString();
+    }
+
+    void unlockReminderAudio();
+    if (reminderIso) {
+      void requestDesktopNotificationPermission();
+    }
+
+    setNotesSaving(true);
+    try {
+      const created = await createNoteApi({
+        title: noteTitleInput.trim(),
+        content: trimmedContent,
+        inkId: prefs.activeInkId,
+        paperId: prefs.paperId,
+        soundEnabled: soundAlertOn,
+        reminderAt: reminderIso,
+      });
+      const next = [...notes, created];
+      setNotes(next);
+      notifyNotesChanged(next);
+      setNoteTitleInput("");
+      setNoteInput("");
+      setShowComposerReminder(false);
+      setComposerReminderAt("");
+      if (reminderIso) {
+        toast.success(`Note saved with reminder for ${formatReminderLabel(reminderIso)}`);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save note.");
+    } finally {
+      setNotesSaving(false);
+    }
+  };
+
+  const handleDeleteNote = async (id: string) => {
+    if (!canEditDashboard) return;
     if (editingReminderId === id) {
       setEditingReminderId(null);
       setReminderDraft("");
     }
-    saveNotepad({
-      ...notepad,
-      points: notepad.points.filter((p) => p.id !== id),
-    });
+    const prev = notes;
+    const optimistic = notes.filter((n) => n.id !== id);
+    setNotes(optimistic);
+    notifyNotesChanged(optimistic);
+
+    try {
+      await deleteNoteApi(id);
+    } catch (err) {
+      setNotes(prev);
+      notifyNotesChanged(prev);
+      toast.error(err instanceof Error ? err.message : "Could not delete note.");
+    }
   };
 
-  const handleOpenReminderEditor = (pt: NotepadPoint) => {
-    if (editingReminderId === pt.id) {
+  const handleOpenReminderEditor = (note: PortalNote) => {
+    if (editingReminderId === note.id) {
       setEditingReminderId(null);
       setReminderDraft("");
       return;
     }
-    setEditingReminderId(pt.id);
-    setReminderDraft(pt.reminderAt || toDatetimeLocalDefault());
+    setEditingReminderId(note.id);
+    setReminderDraft(toDatetimeLocalValue(note.reminderAt));
   };
 
-  const handleSaveReminder = (id: string) => {
+  const handleSaveReminder = async (id: string) => {
+    if (!canEditDashboard) return;
     if (!reminderDraft) {
       toast.error("Please pick a reminder date and time.");
       return;
@@ -426,35 +574,65 @@ export default function PersonalTodoCard() {
       toast.error("Invalid date or time.");
       return;
     }
-    saveNotepad({
-      ...notepad,
-      points: notepad.points.map((pt) =>
-        pt.id === id
-          ? {
-              ...pt,
-              reminderAt: reminderDraft,
-              reminderFired: targetMs <= Date.now(),
-            }
-          : pt,
-      ),
-    });
-    setEditingReminderId(null);
-    setReminderDraft("");
-    toast.success(`Reminder set for ${formatReminderLabel(reminderDraft)}`);
+
+    void unlockReminderAudio();
+    void requestDesktopNotificationPermission();
+
+    const reminderIso = new Date(targetMs).toISOString();
+    setNotesSaving(true);
+    try {
+      const updated = await updateNoteApi(id, {
+        reminderAt: reminderIso,
+        reminderTriggered: false,
+        reminderDismissed: false,
+      });
+      const next = notes.map((n) => (n.id === id ? updated : n));
+      setNotes(next);
+      notifyNotesChanged(next);
+      setEditingReminderId(null);
+      setReminderDraft("");
+      toast.success(`Reminder set for ${formatReminderLabel(reminderIso)}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save reminder.");
+    } finally {
+      setNotesSaving(false);
+    }
   };
 
-  const handleClearReminder = (id: string) => {
-    saveNotepad({
-      ...notepad,
-      points: notepad.points.map((pt) => {
-        if (pt.id !== id) return pt;
-        const { reminderAt: _removed, ...rest } = pt;
-        return { ...rest, reminderFired: false };
-      }),
-    });
-    setEditingReminderId(null);
-    setReminderDraft("");
-    toast.success("Reminder cleared.");
+  const handleToggleNoteSound = async (note: PortalNote) => {
+    if (!canEditDashboard) return;
+    void unlockReminderAudio();
+    const nextSound = !note.soundEnabled;
+    try {
+      const updated = await updateNoteApi(note.id, { soundEnabled: nextSound });
+      const next = notes.map((n) => (n.id === note.id ? updated : n));
+      setNotes(next);
+      notifyNotesChanged(next);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not update note sound setting.");
+    }
+  };
+
+  const handleClearReminder = async (id: string) => {
+    if (!canEditDashboard) return;
+    setNotesSaving(true);
+    try {
+      const updated = await updateNoteApi(id, {
+        reminderAt: null,
+        reminderTriggered: false,
+        reminderDismissed: false,
+      });
+      const next = notes.map((n) => (n.id === id ? updated : n));
+      setNotes(next);
+      notifyNotesChanged(next);
+      setEditingReminderId(null);
+      setReminderDraft("");
+      toast.success("Reminder cleared.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not clear reminder.");
+    } finally {
+      setNotesSaving(false);
+    }
   };
 
   // Swipe handlers (touch + mouse drag on non-interactive card surface)
@@ -495,7 +673,6 @@ export default function PersonalTodoCard() {
       } else if (dx > 0 && mode === "notepad") {
         setMode("todo");
       } else {
-        // Also allow swiping either direction to toggle smoothly
         setMode((prev) => (prev === "todo" ? "notepad" : "todo"));
       }
     }
@@ -509,11 +686,9 @@ export default function PersonalTodoCard() {
   if (!me) return null;
 
   const remainingCount = todos.filter((t) => !t.completed).length;
-  const activePaper = getPaperMeta(notepad.paperId);
-  const activeInk = getInkMeta(notepad.activeInkId);
-  const upcomingRemindersCount = notepad.points.filter(
-    (p) => p.reminderAt && !p.reminderFired,
-  ).length;
+  const activePaper = getPaperMeta(prefs.paperId);
+  const activeInk = getInkMeta(prefs.activeInkId);
+  const upcomingRemindersCount = notes.filter((n) => n.reminderAt && !n.reminderDismissed).length;
 
   return (
     <div
@@ -559,23 +734,25 @@ export default function PersonalTodoCard() {
 
           <CardContent className="p-5 flex flex-col justify-between flex-1 space-y-4">
             <div className="space-y-4">
-              <form onSubmit={handleAddTodo} className="flex gap-2">
-                <Input
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="Add a new personal task..."
-                  className="text-xs h-9 flex-1"
-                  maxLength={120}
-                />
-                <Button type="submit" size="sm" className="h-9 px-3 text-xs gap-1 shrink-0">
-                  <Plus className="h-3.5 w-3.5" /> Add
-                </Button>
-              </form>
+              {canEditDashboard && (
+                <form onSubmit={handleAddTodo} className="flex gap-2">
+                  <Input
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="Add a new personal task..."
+                    className="text-xs h-9 flex-1"
+                    maxLength={120}
+                  />
+                  <Button type="submit" size="sm" className="h-9 px-3 text-xs gap-1 shrink-0">
+                    <Plus className="h-3.5 w-3.5" /> Add
+                  </Button>
+                </form>
+              )}
 
               <div className="space-y-2 max-h-[156px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
                 {todos.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-4">
-                    No personal tasks yet. Add one above!
+                    No personal tasks yet.
                   </p>
                 ) : (
                   todos.map((item) => (
@@ -586,12 +763,13 @@ export default function PersonalTodoCard() {
                       <div className="flex items-center gap-2.5 min-w-0 flex-1">
                         <button
                           type="button"
+                          disabled={!canEditDashboard}
                           onClick={() => toggleTodo(item.id)}
                           className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${
                             item.completed
                               ? "bg-primary border-primary text-primary-foreground"
                               : "border-muted-foreground/40 bg-background hover:border-primary"
-                          }`}
+                          } ${!canEditDashboard ? "opacity-70 cursor-not-allowed" : ""}`}
                         >
                           {item.completed && <Check className="h-3 w-3 stroke-[3]" />}
                         </button>
@@ -605,14 +783,16 @@ export default function PersonalTodoCard() {
                           {item.text}
                         </span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => deleteTodo(item.id)}
-                        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity shrink-0 p-1"
-                        title="Delete task"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {canEditDashboard && (
+                        <button
+                          type="button"
+                          onClick={() => deleteTodo(item.id)}
+                          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity shrink-0 p-1"
+                          title="Delete task"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   ))
                 )}
@@ -667,76 +847,109 @@ export default function PersonalTodoCard() {
                     Personal Notepad
                   </h3>
                   <p className="text-[11px] text-slate-700 truncate">
-                    {notepad.points.length} note{notepad.points.length === 1 ? "" : "s"}
+                    {notes.length} note{notes.length === 1 ? "" : "s"}
                     {upcomingRemindersCount > 0
-                      ? ` · ${upcomingRemindersCount} reminder${upcomingRemindersCount === 1 ? "" : "s"}`
-                      : " · swipe back for To-Do"}
+                      ? ` · ${upcomingRemindersCount} active reminder${upcomingRemindersCount === 1 ? "" : "s"}`
+                      : " · synced to portal"}
                   </p>
                 </div>
               </div>
 
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setMode("todo")}
-                className="h-7 px-2.5 text-[11px] gap-1.5 rounded-lg bg-white/80 hover:bg-white text-slate-900 border-slate-400/60"
-              >
-                <CheckSquare className="h-3.5 w-3.5" />
-                To-Do
-              </Button>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleToggleGlobalSound}
+                  title={soundAlertOn ? "Mute reminder chimes" : "Enable reminder chimes"}
+                  className={`h-7 px-2 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 transition-colors ${
+                    soundAlertOn
+                      ? "bg-white/85 border-[#5B00A3]/35 text-[#5B00A3] hover:bg-white"
+                      : "bg-white/60 border-slate-400/60 text-slate-600 hover:bg-white"
+                  }`}
+                >
+                  {soundAlertOn ? (
+                    <Volume2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <VolumeX className="h-3.5 w-3.5" />
+                  )}
+                  <span>{soundAlertOn ? "Sound ON" : "Sound OFF"}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={testingSound}
+                  onClick={() => void handleTestSound()}
+                  title="Play chime preview & unlock browser audio alerts"
+                  className="h-7 px-2 rounded-lg border border-slate-400/60 bg-white/85 hover:bg-white text-slate-900 text-[11px] font-semibold inline-flex items-center gap-1 transition-colors disabled:opacity-60"
+                >
+                  <Volume2 className="h-3.5 w-3.5 text-[#5B00A3]" />
+                  <span>Test Sound</span>
+                </button>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setMode("todo")}
+                  className="h-7 px-2.5 text-[11px] gap-1.5 rounded-lg bg-white/80 hover:bg-white text-slate-900 border-slate-400/60"
+                >
+                  <CheckSquare className="h-3.5 w-3.5" />
+                  To-Do
+                </Button>
+              </div>
             </div>
 
             {/* Paper Color + Text Ink Color Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-900/10">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-700 flex items-center gap-1">
-                  <Palette className="h-3 w-3" /> Ink
-                </span>
+            {canEditDashboard && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-900/10">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-700 flex items-center gap-1">
+                    <Palette className="h-3 w-3" /> Ink
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {INK_COLORS.map((ink) => {
+                      const selected = prefs.activeInkId === ink.id;
+                      return (
+                        <button
+                          key={ink.id}
+                          type="button"
+                          onClick={() => updatePrefs({ ...prefs, activeInkId: ink.id })}
+                          title={`Text color: ${ink.label}`}
+                          aria-label={`Select ${ink.label} text color`}
+                          className={`h-4 w-4 rounded-full ${ink.swatchClass} transition-transform ${
+                            selected
+                              ? "ring-2 ring-offset-1 ring-slate-900 scale-110"
+                              : "opacity-75 hover:opacity-100"
+                          }`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="flex items-center gap-1">
-                  {INK_COLORS.map((ink) => {
-                    const selected = notepad.activeInkId === ink.id;
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-700 mr-0.5">
+                    Page
+                  </span>
+                  {PAPER_THEMES.map((paper) => {
+                    const selected = prefs.paperId === paper.id;
                     return (
                       <button
-                        key={ink.id}
+                        key={paper.id}
                         type="button"
-                        onClick={() => saveNotepad({ ...notepad, activeInkId: ink.id })}
-                        title={`Text color: ${ink.label}`}
-                        aria-label={`Select ${ink.label} text color`}
-                        className={`h-4 w-4 rounded-full ${ink.swatchClass} transition-transform ${
+                        onClick={() => updatePrefs({ ...prefs, paperId: paper.id })}
+                        title={`Page theme: ${paper.label}`}
+                        aria-label={`Select ${paper.label} notepad color`}
+                        className={`h-4 w-4 rounded-sm border ${paper.swatchClass} transition-transform ${
                           selected
                             ? "ring-2 ring-offset-1 ring-slate-900 scale-110"
-                            : "opacity-75 hover:opacity-100"
+                            : "opacity-80 hover:opacity-100"
                         }`}
                       />
                     );
                   })}
                 </div>
               </div>
-
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-700 mr-0.5">
-                  Page
-                </span>
-                {PAPER_THEMES.map((paper) => {
-                  const selected = notepad.paperId === paper.id;
-                  return (
-                    <button
-                      key={paper.id}
-                      type="button"
-                      onClick={() => saveNotepad({ ...notepad, paperId: paper.id })}
-                      title={`Page theme: ${paper.label}`}
-                      aria-label={`Select ${paper.label} notepad color`}
-                      className={`h-4 w-4 rounded-sm border ${paper.swatchClass} transition-transform ${
-                        selected
-                          ? "ring-2 ring-offset-1 ring-slate-900 scale-110"
-                          : "opacity-80 hover:opacity-100"
-                      }`}
-                    />
-                  );
-                })}
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Ruled Paper Area */}
@@ -748,48 +961,123 @@ export default function PersonalTodoCard() {
             />
 
             <div className="relative z-10 flex flex-col flex-1 px-3 py-2.5 pl-11 space-y-2">
-              {/* Quick Add Point Input in Selected Ink Color */}
-              <form onSubmit={handleAddPoint} className="flex items-center gap-1.5">
-                <span className={`text-xs font-bold tabular-nums shrink-0 ${activeInk.textClass}`}>
-                  {notepad.points.length + 1}.
-                </span>
-                <input
-                  type="text"
-                  value={noteInput}
-                  onChange={(e) => setNoteInput(e.target.value)}
-                  placeholder={`Write note in ${activeInk.label.toLowerCase()}...`}
-                  maxLength={180}
-                  className={`flex-1 bg-white/65 border border-slate-900/15 rounded-lg px-2.5 h-8 text-xs font-medium outline-none focus:bg-white/90 focus:border-slate-900/40 ${activeInk.textClass} ${activeInk.placeholderClass}`}
-                />
-                <button
-                  type="submit"
-                  className="h-8 px-2.5 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 inline-flex items-center gap-1 shrink-0 transition-colors"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add
-                </button>
-              </form>
+              {/* Quick Add Note Form with Optional Title + Reminder Picker */}
+              {canEditDashboard && (
+                <form onSubmit={(e) => void handleAddNote(e)} className="space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`text-xs font-bold tabular-nums shrink-0 ${activeInk.textClass}`}
+                    >
+                      {notes.length + 1}.
+                    </span>
+                    <input
+                      type="text"
+                      value={noteInput}
+                      onChange={(e) => setNoteInput(e.target.value)}
+                      placeholder={`Write note in ${activeInk.label.toLowerCase()}...`}
+                      maxLength={300}
+                      className={`flex-1 bg-white/70 border border-slate-900/15 rounded-lg px-2.5 h-8 text-xs font-medium outline-none focus:bg-white/95 focus:border-slate-900/40 ${activeInk.textClass} ${activeInk.placeholderClass}`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void unlockReminderAudio();
+                        setShowComposerReminder((prev) => {
+                          const next = !prev;
+                          if (next && !composerReminderAt) {
+                            setComposerReminderAt(toDatetimeLocalValue());
+                          }
+                          return next;
+                        });
+                      }}
+                      title="Set reminder date & time for this note"
+                      className={`h-8 px-2 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 shrink-0 transition-colors ${
+                        showComposerReminder
+                          ? "bg-[#5B00A3] text-white border-[#5B00A3]"
+                          : "bg-white/75 text-slate-800 border-slate-900/15 hover:bg-white"
+                      }`}
+                    >
+                      <Bell className="h-3.5 w-3.5" />
+                      <span className="hidden sm:inline">Remind</span>
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={notesSaving}
+                      className="h-8 px-2.5 rounded-lg bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 inline-flex items-center gap-1 shrink-0 transition-colors disabled:opacity-60"
+                    >
+                      {notesSaving ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Plus className="h-3.5 w-3.5" />
+                      )}
+                      Add
+                    </button>
+                  </div>
+
+                  {showComposerReminder && (
+                    <div className="flex flex-wrap items-center gap-1.5 rounded-lg bg-white/80 border border-slate-900/15 px-2.5 py-1.5">
+                      <input
+                        type="text"
+                        value={noteTitleInput}
+                        onChange={(e) => setNoteTitleInput(e.target.value)}
+                        placeholder="Short title (optional)"
+                        maxLength={80}
+                        className="h-7 flex-1 min-w-[120px] rounded-md border border-slate-300 bg-white px-2 text-[11px] text-slate-900 outline-none focus:border-[#5B00A3]"
+                      />
+                      <div className="flex items-center gap-1.5 flex-1 min-w-[175px]">
+                        <Clock className="h-3 w-3 text-[#5B00A3] shrink-0" />
+                        <input
+                          type="datetime-local"
+                          value={composerReminderAt}
+                          onChange={(e) => setComposerReminderAt(e.target.value)}
+                          aria-label="Reminder date and time"
+                          className="h-7 flex-1 rounded-md border border-slate-300 bg-white px-2 text-[11px] text-slate-900 outline-none focus:border-[#5B00A3]"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowComposerReminder(false);
+                          setComposerReminderAt("");
+                          setNoteTitleInput("");
+                        }}
+                        aria-label="Cancel reminder fields"
+                        className="h-7 w-7 inline-flex items-center justify-center rounded-md text-slate-500 hover:bg-slate-900/10"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </form>
+              )}
 
               {/* Numbered Points List */}
-              <div className="space-y-1.5 max-h-[155px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-900/20">
-                {notepad.points.length === 0 ? (
+              <div className="space-y-1.5 max-h-[165px] overflow-y-auto pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-900/20">
+                {notesLoading && notes.length === 0 ? (
+                  <div className="flex items-center justify-center gap-2 py-5 text-xs text-slate-700">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Loading notes...</span>
+                  </div>
+                ) : notes.length === 0 ? (
                   <p className="text-xs italic text-slate-600 py-4 text-center">
-                    Start writing numbered notes above — pick any ink color and set date/time
-                    reminders!
+                    Start writing numbered notes above — set date/time reminders with audible chimes
+                    across all portal pages!
                   </p>
                 ) : (
-                  notepad.points.map((pt, idx) => {
-                    const ptInk = getInkMeta(pt.inkId);
-                    const isEditingReminder = editingReminderId === pt.id;
+                  notes.map((note, idx) => {
+                    const ptInk = getInkMeta(note.inkId);
+                    const isEditingReminder = editingReminderId === note.id;
+                    const dueMs = note.reminderAt ? new Date(note.reminderAt).getTime() : NaN;
                     const isDue =
-                      pt.reminderAt &&
-                      !Number.isNaN(new Date(pt.reminderAt).getTime()) &&
-                      new Date(pt.reminderAt).getTime() <= Date.now();
+                      Boolean(note.reminderAt) &&
+                      !note.reminderDismissed &&
+                      !Number.isNaN(dueMs) &&
+                      dueMs <= Date.now();
 
                     return (
                       <div
-                        key={pt.id}
-                        className="group rounded-lg bg-white/45 hover:bg-white/75 border border-slate-900/10 px-2.5 py-1.5 transition-colors"
+                        key={note.id}
+                        className="group rounded-lg bg-white/55 hover:bg-white/85 border border-slate-900/10 px-2.5 py-1.5 transition-colors"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex items-start gap-2 min-w-0 flex-1">
@@ -799,53 +1087,95 @@ export default function PersonalTodoCard() {
                               {idx + 1}.
                             </span>
                             <div className="min-w-0 flex-1">
+                              {note.title.trim() && (
+                                <p className="text-[11px] font-bold text-slate-900 truncate select-text">
+                                  {note.title}
+                                </p>
+                              )}
                               <p
                                 className={`text-xs font-semibold leading-snug break-words select-text ${ptInk.textClass}`}
                               >
-                                {pt.text}
+                                {note.content}
                               </p>
-                              {pt.reminderAt && (
-                                <span
-                                  className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
-                                    isDue
-                                      ? "bg-rose-600 text-white"
-                                      : "bg-slate-900/10 text-slate-800"
-                                  }`}
-                                >
-                                  <Clock className="h-2.5 w-2.5" />
-                                  {isDue ? "Due · " : ""}
-                                  {formatReminderLabel(pt.reminderAt)}
-                                </span>
+                              {note.reminderAt && (
+                                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                  <span
+                                    className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
+                                      note.reminderDismissed
+                                        ? "bg-emerald-700/15 text-emerald-900"
+                                        : isDue
+                                          ? "bg-rose-600 text-white"
+                                          : "bg-[#5B00A3]/10 text-[#5B00A3]"
+                                    }`}
+                                  >
+                                    <Clock className="h-2.5 w-2.5" />
+                                    {note.reminderDismissed
+                                      ? "Dismissed · "
+                                      : isDue
+                                        ? "Due · "
+                                        : "Reminder · "}
+                                    {formatReminderLabel(note.reminderAt)}
+                                  </span>
+                                  {!note.soundEnabled && (
+                                    <span className="inline-flex items-center gap-0.5 rounded-md bg-slate-900/10 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+                                      <VolumeX className="h-2.5 w-2.5" /> Muted
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleOpenReminderEditor(pt)}
-                              title={pt.reminderAt ? "Edit reminder" : "Set date & time reminder"}
-                              className={`p-1 rounded-md transition-colors ${
-                                pt.reminderAt
-                                  ? "text-amber-700 bg-amber-500/15 hover:bg-amber-500/25"
-                                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-900/10"
-                              }`}
-                            >
-                              {pt.reminderAt ? (
-                                <BellRing className="h-3.5 w-3.5" />
-                              ) : (
-                                <Bell className="h-3.5 w-3.5" />
-                              )}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeletePoint(pt.id)}
-                              title="Delete note"
-                              className="p-1 rounded-md text-slate-500 hover:text-rose-700 hover:bg-rose-500/10 transition-colors"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
+                          {canEditDashboard && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleNoteSound(note)}
+                                title={
+                                  note.soundEnabled
+                                    ? "Sound alert ON for this note (click to mute)"
+                                    : "Sound alert OFF for this note (click to enable)"
+                                }
+                                className={`p-1 rounded-md transition-colors ${
+                                  note.soundEnabled
+                                    ? "text-[#5B00A3] hover:bg-[#5B00A3]/10"
+                                    : "text-slate-400 hover:text-slate-700 hover:bg-slate-900/10"
+                                }`}
+                              >
+                                {note.soundEnabled ? (
+                                  <Volume2 className="h-3.5 w-3.5" />
+                                ) : (
+                                  <VolumeX className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenReminderEditor(note)}
+                                title={
+                                  note.reminderAt ? "Edit reminder" : "Set date & time reminder"
+                                }
+                                className={`p-1 rounded-md transition-colors ${
+                                  note.reminderAt && !note.reminderDismissed
+                                    ? "text-amber-700 bg-amber-500/15 hover:bg-amber-500/25"
+                                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-900/10"
+                                }`}
+                              >
+                                {note.reminderAt && !note.reminderDismissed ? (
+                                  <BellRing className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Bell className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteNote(note.id)}
+                                title="Delete note"
+                                className="p-1 rounded-md text-slate-500 hover:text-rose-700 hover:bg-rose-500/10 transition-colors"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         {isEditingReminder && (
@@ -854,20 +1184,22 @@ export default function PersonalTodoCard() {
                               type="datetime-local"
                               value={reminderDraft}
                               onChange={(e) => setReminderDraft(e.target.value)}
-                              className="h-7 rounded-md border border-slate-400/70 bg-white px-2 text-[11px] text-slate-900 outline-none focus:border-slate-900 flex-1 min-w-[165px]"
+                              className="h-7 rounded-md border border-slate-400/70 bg-white px-2 text-[11px] text-slate-900 outline-none focus:border-[#5B00A3] flex-1 min-w-[165px]"
                             />
                             <button
                               type="button"
-                              onClick={() => handleSaveReminder(pt.id)}
-                              className="h-7 px-2.5 rounded-md bg-slate-900 text-white text-[11px] font-semibold hover:bg-slate-800"
+                              disabled={notesSaving}
+                              onClick={() => void handleSaveReminder(note.id)}
+                              className="h-7 px-2.5 rounded-md bg-[#5B00A3] text-white text-[11px] font-semibold hover:bg-[#4a0086] disabled:opacity-60"
                             >
                               Set
                             </button>
-                            {pt.reminderAt && (
+                            {note.reminderAt && (
                               <button
                                 type="button"
-                                onClick={() => handleClearReminder(pt.id)}
-                                className="h-7 px-2 rounded-md border border-rose-300 bg-rose-50 text-rose-700 text-[11px] font-semibold hover:bg-rose-100"
+                                disabled={notesSaving}
+                                onClick={() => void handleClearReminder(note.id)}
+                                className="h-7 px-2 rounded-md border border-rose-300 bg-rose-50 text-rose-700 text-[11px] font-semibold hover:bg-rose-100 disabled:opacity-60"
                               >
                                 Clear
                               </button>

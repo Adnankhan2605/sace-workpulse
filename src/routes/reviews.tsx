@@ -72,8 +72,9 @@ export const Route = createFileRoute("/reviews")({
 });
 
 function MonthlyReviewsPage() {
-  const { state, me, can, visibleUsers, update, log } = useApp();
+  const { state, me, can, canEditModule, visibleUsers, update, log } = useApp();
   const isAdmin = me?.role === "super_admin" || me?.role === "admin" || can("view_reports");
+  const canEditTasks = canEditModule("tasks");
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -153,6 +154,10 @@ function MonthlyReviewsPage() {
   }, [existingReview, monthTasks, monthEods]);
 
   const handleOpenSubmitModal = () => {
+    if (!canEditTasks) {
+      toast.error("View-only access: cannot edit monthly reviews.");
+      return;
+    }
     if (!existingReview) {
       const autoSummary =
         monthTasks.length > 0
@@ -167,6 +172,10 @@ function MonthlyReviewsPage() {
 
   const handleSubmitReview = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEditTasks) {
+      toast.error("View-only access: cannot submit monthly reviews.");
+      return;
+    }
     if (!hits.trim() || !futureTargets.trim()) {
       toast.error("Please fill in at least Hits of the Month and Future Targets.");
       return;
@@ -242,7 +251,7 @@ function MonthlyReviewsPage() {
               </SelectContent>
             </Select>
 
-            {!isAdmin && (
+            {!isAdmin && canEditTasks && (
               <Button
                 size="sm"
                 onClick={handleOpenSubmitModal}
@@ -306,7 +315,7 @@ function MonthlyReviewsPage() {
                 )}
               </p>
             </div>
-            {!isAdmin && (
+            {!isAdmin && canEditTasks && (
               <Button size="sm" onClick={handleOpenSubmitModal} className="gap-1.5 shrink-0">
                 <ClipboardCheck className="h-4 w-4" />
                 {existingReview ? "View / Update Review" : "Start Review Form"}
@@ -520,10 +529,12 @@ function MonthlyReviewsPage() {
                 <ClipboardCheck className="h-4 w-4 text-primary" />
                 Your Monthly Reflection &amp; Feedback ({selectedMonthKey})
               </CardTitle>
-              <Button size="sm" onClick={handleOpenSubmitModal} className="gap-1.5">
-                <Sparkles className="h-4 w-4" />
-                {existingReview ? "Edit Your Review" : "Write Review Now"}
-              </Button>
+              {canEditTasks && (
+                <Button size="sm" onClick={handleOpenSubmitModal} className="gap-1.5">
+                  <Sparkles className="h-4 w-4" />
+                  {existingReview ? "Edit Your Review" : "Write Review Now"}
+                </Button>
+              )}
             </CardHeader>
             <CardContent className="space-y-6 p-6">
               {!existingReview ? (
@@ -538,13 +549,15 @@ function MonthlyReviewsPage() {
                     Please submit your monthly reflection ahead of the 15th review meeting. Your
                     daily tasks and EOD logs are automatically synthesized for you.
                   </p>
-                  <Button
-                    size="sm"
-                    onClick={handleOpenSubmitModal}
-                    className="mt-4 gap-1.5 shadow-sm"
-                  >
-                    Open Review Form
-                  </Button>
+                  {canEditTasks && (
+                    <Button
+                      size="sm"
+                      onClick={handleOpenSubmitModal}
+                      className="mt-4 gap-1.5 shadow-sm"
+                    >
+                      Open Review Form
+                    </Button>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-6">

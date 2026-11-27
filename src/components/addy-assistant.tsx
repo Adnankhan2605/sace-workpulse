@@ -1,6 +1,5 @@
 import * as React from "react";
 import {
-  Bot,
   Send,
   X,
   Sparkles,
@@ -9,6 +8,7 @@ import {
   FileCheck,
   CalendarCheck,
   ChevronDown,
+  Eye,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { askAddyAssistant, useApp } from "@/lib/store";
@@ -43,7 +43,10 @@ const SUGGESTIONS = [
 ];
 
 export function AddyAssistant() {
-  const { me } = useApp();
+  const { me, ready, canViewModule, canEditModule } = useApp();
+
+  const canViewAddy = ready && Boolean(me) && canViewModule("addy_ai");
+  const canEditAddy = ready && Boolean(me) && canEditModule("addy_ai");
 
   const [mounted, setMounted] = React.useState(false);
   const [chatOpen, setChatOpen] = React.useState(false);
@@ -81,6 +84,7 @@ export function AddyAssistant() {
   }, [messages, chatOpen]);
 
   const sendChat = async (text: string) => {
+    if (!canEditAddy) return;
     const trimmed = text.trim();
     if (!trimmed || chatBusy) return;
 
@@ -125,7 +129,7 @@ export function AddyAssistant() {
     }
   };
 
-  if (!mounted) return null;
+  if (!mounted || !canViewAddy) return null;
 
   return (
     <>
@@ -166,8 +170,13 @@ export function AddyAssistant() {
                 <span className="absolute bottom-0 right-0 h-2 w-2 rounded-full bg-emerald-400 ring-1 ring-white" />
               </div>
               <div className="flex flex-col">
-                <span className="text-sm font-bold leading-tight flex items-center gap-1">
+                <span className="text-sm font-bold leading-tight flex items-center gap-1.5">
                   Addy <Sparkles className="h-3 w-3 text-amber-300" />
+                  {!canEditAddy && (
+                    <span className="inline-flex items-center gap-1 rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-medium text-purple-100">
+                      <Eye className="h-2.5 w-2.5" /> View-Only
+                    </span>
+                  )}
                 </span>
                 <span className="text-[10px] text-purple-200/80">SACE Workforce AI Assistant</span>
               </div>
@@ -239,19 +248,21 @@ export function AddyAssistant() {
           </div>
 
           {/* Quick Prompt Suggestions */}
-          <div className="px-3 py-2 bg-muted/40 border-t border-border/60 flex gap-1.5 overflow-x-auto scrollbar-none">
-            {SUGGESTIONS.map((item, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => sendChat(item.query)}
-                className="flex items-center gap-1 rounded-lg border border-border/80 bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground whitespace-nowrap transition-colors shrink-0 cursor-pointer"
-              >
-                <item.icon className="h-3 w-3 text-purple-600 dark:text-purple-400" />
-                <span>{item.label}</span>
-              </button>
-            ))}
-          </div>
+          {canEditAddy && (
+            <div className="px-3 py-2 bg-muted/40 border-t border-border/60 flex gap-1.5 overflow-x-auto scrollbar-none">
+              {SUGGESTIONS.map((item, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => sendChat(item.query)}
+                  className="flex items-center gap-1 rounded-lg border border-border/80 bg-background px-2 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground whitespace-nowrap transition-colors shrink-0 cursor-pointer"
+                >
+                  <item.icon className="h-3 w-3 text-purple-600 dark:text-purple-400" />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Chat Input Box */}
           <form
@@ -265,14 +276,18 @@ export function AddyAssistant() {
               ref={inputRef}
               value={chatInput}
               onChange={(e) => setChatInput(e.target.value)}
-              placeholder="Ask about tasks, punch-in, leaves..."
+              placeholder={
+                canEditAddy
+                  ? "Ask about tasks, punch-in, leaves..."
+                  : "View-Only Access — prompts are disabled"
+              }
               className="text-xs h-9 bg-background focus-visible:ring-purple-500"
-              disabled={chatBusy}
+              disabled={chatBusy || !canEditAddy}
             />
             <Button
               type="submit"
               size="sm"
-              disabled={chatBusy || !chatInput.trim()}
+              disabled={chatBusy || !canEditAddy || !chatInput.trim()}
               className="h-9 w-9 p-0 bg-purple-700 hover:bg-purple-800 text-white shrink-0 rounded-xl"
             >
               <Send className="h-4 w-4" />

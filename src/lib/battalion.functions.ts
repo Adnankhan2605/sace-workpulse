@@ -7,14 +7,14 @@ export const updateMyPresence = createServerFn({ method: "POST" })
   .inputValidator((raw: unknown) => UpdatePresenceSchema.parse(raw))
   .handler(async ({ data, context }) => {
     const { saveUserPresenceRecord } = await import("./battalion.server.ts");
-    return saveUserPresenceRecord(context.userId, data);
+    return saveUserPresenceRecord(context.userId, data, context.role);
   });
 
 export const getBattalions = createServerFn({ method: "GET" })
   .middleware([requirePortalAuth])
   .handler(async ({ context }) => {
     const { fetchPopulatedBattalions } = await import("./battalion.server.ts");
-    return fetchPopulatedBattalions(context.userId);
+    return fetchPopulatedBattalions(context.userId, context.role);
   });
 
 export const createBattalion = createServerFn({ method: "POST" })

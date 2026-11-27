@@ -256,8 +256,9 @@ function formatDateHeader(iso: string): string {
 }
 
 function MessagesPage() {
-  const { state, me, update, notify, log } = useApp();
+  const { state, me, canEditModule, update, notify, log } = useApp();
   const isAdmin = me?.role === "super_admin" || me?.role === "admin";
+  const canEditMessages = canEditModule("messages_tickets");
 
   const [activeTab, setActiveTab] = React.useState<InboxFilterTab>("all");
   const [unreadOnly, setUnreadOnly] = React.useState(false);
@@ -318,7 +319,7 @@ function MessagesPage() {
 
   // Ensure initial channels exist if empty
   React.useEffect(() => {
-    if (state.conversations.length === 0) {
+    if (canEditMessages && state.conversations.length === 0) {
       update((d) => {
         d.conversations.push(
           {
@@ -344,7 +345,7 @@ function MessagesPage() {
         });
       });
     }
-  }, [state.conversations.length, state.users, update]);
+  }, [canEditMessages, state.conversations.length, state.users, update]);
 
   // All accessible conversations for current user (strict participant scoping)
   const mine = React.useMemo(() => {
@@ -460,7 +461,7 @@ function MessagesPage() {
 
   // Auto-mark conversation as read when active
   React.useEffect(() => {
-    if (!active || !me) return;
+    if (!canEditMessages || !active || !me) return;
     const unreadMessages = state.messages.filter(
       (m) => m.conversationId === active.id && !m.readBy?.includes(me.id),
     );
@@ -473,10 +474,10 @@ function MessagesPage() {
         });
       });
     }
-  }, [active, me, thread.length, update, state.messages]);
+  }, [canEditMessages, active, me, thread.length, update, state.messages]);
 
   const handleMarkAllAsRead = React.useCallback(() => {
-    if (!me) return;
+    if (!me || !canEditMessages) return;
     update((d) => {
       d.messages.forEach((m) => {
         if (!m.readBy) m.readBy = [];
@@ -491,7 +492,7 @@ function MessagesPage() {
       });
     });
     toast.success("All messages marked as read");
-  }, [me, update]);
+  }, [canEditMessages, me, update]);
 
   // Group messages by date
   const messageGroups = React.useMemo(() => {
@@ -578,7 +579,8 @@ function MessagesPage() {
   };
 
   const handleSendMessage = async () => {
-    if ((!draft.trim() && !pendingAttachment) || !active || uploadingAttachment) return;
+    if (!canEditMessages || (!draft.trim() && !pendingAttachment) || !active || uploadingAttachment)
+      return;
     const body = draft.trim();
     const attachmentToUpload = pendingAttachment;
 
@@ -830,46 +832,48 @@ function MessagesPage() {
         title="Inbox & Communication"
         description="Connect in real time with direct chats, project channels, and company-wide announcements."
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            {tabCounts.totalUnread > 0 && (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleMarkAllRead}
-                className="gap-1.5 text-xs"
-              >
-                <CheckCheck className="h-3.5 w-3.5 text-muted-foreground" /> Mark All Read
-              </Button>
-            )}
+          canEditMessages ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {tabCounts.totalUnread > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleMarkAllRead}
+                  className="gap-1.5 text-xs"
+                >
+                  <CheckCheck className="h-3.5 w-3.5 text-muted-foreground" /> Mark All Read
+                </Button>
+              )}
 
-            {isAdmin && (
+              {isAdmin && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setNewAnnouncementOpen(true)}
+                  className="gap-1.5 text-xs shadow-xs"
+                >
+                  <Megaphone className="h-3.5 w-3.5 text-amber-500" /> New Announcement
+                </Button>
+              )}
+
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setNewAnnouncementOpen(true)}
+                onClick={() => setNewGroupOpen(true)}
                 className="gap-1.5 text-xs shadow-xs"
               >
-                <Megaphone className="h-3.5 w-3.5 text-amber-500" /> New Announcement
+                <Hash className="h-3.5 w-3.5 text-primary" /> New Channel
               </Button>
-            )}
 
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setNewGroupOpen(true)}
-              className="gap-1.5 text-xs shadow-xs"
-            >
-              <Hash className="h-3.5 w-3.5 text-primary" /> New Channel
-            </Button>
-
-            <Button
-              size="sm"
-              onClick={() => setNewChatOpen(true)}
-              className="gap-1.5 text-xs shadow-xs"
-            >
-              <MessageSquarePlus className="h-3.5 w-3.5" /> Direct Chat
-            </Button>
-          </div>
+              <Button
+                size="sm"
+                onClick={() => setNewChatOpen(true)}
+                className="gap-1.5 text-xs shadow-xs"
+              >
+                <MessageSquarePlus className="h-3.5 w-3.5" /> Direct Chat
+              </Button>
+            </div>
+          ) : undefined
         }
       />
 
@@ -892,13 +896,15 @@ function MessagesPage() {
                     >
                       {tabCounts.totalUnread} new
                     </Badge>
-                    <button
-                      type="button"
-                      onClick={handleMarkAllAsRead}
-                      className="text-[11px] font-medium text-primary hover:underline transition-colors"
-                    >
-                      Mark all read
-                    </button>
+                    {canEditMessages && (
+                      <button
+                        type="button"
+                        onClick={handleMarkAllAsRead}
+                        className="text-[11px] font-medium text-primary hover:underline transition-colors"
+                      >
+                        Mark all read
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -977,7 +983,7 @@ function MessagesPage() {
                       ? "No chats matched your search term."
                       : "Start a 1:1 chat or join a channel."}
                 </p>
-                {!convoSearch && !unreadOnly && (
+                {!convoSearch && !unreadOnly && canEditMessages && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -1178,14 +1184,16 @@ function MessagesPage() {
                 <div className="flex items-center gap-1.5">
                   {active.kind === "group" && (
                     <>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setAddMemberOpen(true)}
-                        className="h-8 text-xs gap-1"
-                      >
-                        <UserPlus className="h-3.5 w-3.5" /> Invite
-                      </Button>
+                      {canEditMessages && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setAddMemberOpen(true)}
+                          className="h-8 text-xs gap-1"
+                        >
+                          <UserPlus className="h-3.5 w-3.5" /> Invite
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"
@@ -1312,241 +1320,251 @@ function MessagesPage() {
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Quick Action Response Chips */}
-                <div className="flex flex-wrap items-center gap-1.5 pt-2 pb-1">
-                  <span className="text-[10px] text-muted-foreground font-medium mr-1">
-                    Quick reply:
-                  </span>
-                  {[
-                    "👍 Acknowledged",
-                    "✅ Working on this",
-                    "🙌 Thanks a lot",
-                    "🤝 Let's sync today",
-                  ].map((quick) => (
-                    <button
-                      key={quick}
-                      type="button"
-                      onClick={() => {
-                        setDraft((prev) => (prev ? `${prev} ${quick}` : quick));
-                      }}
-                      className="rounded-full bg-background border border-border/80 px-2.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:border-primary/50 transition"
-                    >
-                      {quick}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        const clip = await navigator.clipboard.readText();
-                        if (clip) {
-                          setDraft((prev) => (prev ? `${prev} ${clip}` : clip));
-                          toast.success("Pasted from clipboard into message");
-                        } else {
-                          toast.error("Clipboard is empty");
-                        }
-                      } catch {
-                        toast.error("Clipboard access blocked — press Ctrl/Cmd+V in the box below");
-                      }
-                    }}
-                    className="inline-flex items-center gap-1 rounded-full bg-primary/10 border border-primary/30 px-2.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/20 transition"
-                  >
-                    <ClipboardPaste className="h-3 w-3" /> Paste copied secret
-                  </button>
-                </div>
-
-                {/* Pre-send Attachment Preview Chip */}
-                {pendingAttachment && (
-                  <div className="mt-2 mb-1 flex items-center justify-between gap-3 rounded-xl border border-[#8A007E]/30 bg-[#5B00A3]/10 px-3 py-2">
-                    <div className="flex min-w-0 items-center gap-2.5">
-                      {pendingAttachment.previewUrl ? (
-                        <img
-                          src={pendingAttachment.previewUrl}
-                          alt={pendingAttachment.file.name}
-                          className="h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
-                        />
-                      ) : (
-                        <span className="inline-flex h-10 min-w-[44px] shrink-0 items-center justify-center rounded-lg bg-[#5B00A3] px-2 text-[10px] font-bold uppercase tracking-wider text-white">
-                          {pendingAttachment.badgeLabel}
-                        </span>
-                      )}
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-semibold text-foreground">
-                          {pendingAttachment.file.name}
-                        </p>
-                        <p className="text-[11px] tabular-nums text-muted-foreground">
-                          {formatAttachmentBytes(pendingAttachment.file.size)} · Ready to send
-                        </p>
-                      </div>
+                {canEditMessages ? (
+                  <>
+                    {/* Quick Action Response Chips */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-2 pb-1">
+                      <span className="text-[10px] text-muted-foreground font-medium mr-1">
+                        Quick reply:
+                      </span>
+                      {[
+                        "👍 Acknowledged",
+                        "✅ Working on this",
+                        "🙌 Thanks a lot",
+                        "🤝 Let's sync today",
+                      ].map((quick) => (
+                        <button
+                          key={quick}
+                          type="button"
+                          onClick={() => {
+                            setDraft((prev) => (prev ? `${prev} ${quick}` : quick));
+                          }}
+                          className="rounded-full bg-background border border-border/80 px-2.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:border-primary/50 transition"
+                        >
+                          {quick}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const clip = await navigator.clipboard.readText();
+                            if (clip) {
+                              setDraft((prev) => (prev ? `${prev} ${clip}` : clip));
+                              toast.success("Pasted from clipboard into message");
+                            } else {
+                              toast.error("Clipboard is empty");
+                            }
+                          } catch {
+                            toast.error(
+                              "Clipboard access blocked — press Ctrl/Cmd+V in the box below",
+                            );
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full bg-primary/10 border border-primary/30 px-2.5 py-0.5 text-[10px] font-medium text-primary hover:bg-primary/20 transition"
+                      >
+                        <ClipboardPaste className="h-3 w-3" /> Paste copied secret
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={clearPendingAttachment}
-                      disabled={uploadingAttachment}
-                      aria-label="Remove attachment"
-                      title="Remove attachment"
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-background hover:text-destructive transition-colors"
+
+                    {/* Pre-send Attachment Preview Chip */}
+                    {pendingAttachment && (
+                      <div className="mt-2 mb-1 flex items-center justify-between gap-3 rounded-xl border border-[#8A007E]/30 bg-[#5B00A3]/10 px-3 py-2">
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          {pendingAttachment.previewUrl ? (
+                            <img
+                              src={pendingAttachment.previewUrl}
+                              alt={pendingAttachment.file.name}
+                              className="h-10 w-10 shrink-0 rounded-lg border border-border object-cover"
+                            />
+                          ) : (
+                            <span className="inline-flex h-10 min-w-[44px] shrink-0 items-center justify-center rounded-lg bg-[#5B00A3] px-2 text-[10px] font-bold uppercase tracking-wider text-white">
+                              {pendingAttachment.badgeLabel}
+                            </span>
+                          )}
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold text-foreground">
+                              {pendingAttachment.file.name}
+                            </p>
+                            <p className="text-[11px] tabular-nums text-muted-foreground">
+                              {formatAttachmentBytes(pendingAttachment.file.size)} · Ready to send
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={clearPendingAttachment}
+                          disabled={uploadingAttachment}
+                          aria-label="Remove attachment"
+                          title="Remove attachment"
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-background hover:text-destructive transition-colors"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Message Composer Box */}
+                    <form
+                      className="relative flex items-center gap-2 pt-2 border-t border-border"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void handleSendMessage();
+                      }}
                     >
-                      <X className="h-4 w-4" />
-                    </button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        className="hidden"
+                        onChange={handleFilePicked}
+                      />
+
+                      <div ref={attachMenuRef} className="relative shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setAttachMenuOpen((prev) => !prev)}
+                          disabled={uploadingAttachment}
+                          aria-label="Attach photo, video, audio, PDF or document"
+                          title="Attach media or document (max 10 MB)"
+                          className={cn(
+                            "flex h-10 w-10 items-center justify-center rounded-full border transition-all focus:outline-hidden focus:ring-2 focus:ring-[#5B00A3]",
+                            attachMenuOpen
+                              ? "border-[#5B00A3] bg-[#5B00A3] text-white shadow-sm"
+                              : "border-border bg-background text-foreground hover:border-[#8A007E]/60 hover:bg-[#5B00A3]/10",
+                          )}
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.25"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className={cn(
+                              "h-5 w-5 transition-transform duration-150",
+                              attachMenuOpen && "rotate-45",
+                            )}
+                            aria-hidden="true"
+                          >
+                            <path d="M12 5v14M5 12h14" />
+                          </svg>
+                        </button>
+
+                        {attachMenuOpen && (
+                          <div className="absolute bottom-12 left-0 z-40 w-60 rounded-2xl border border-border bg-card p-1.5 shadow-xl">
+                            <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Attach Media &amp; Files (max 10 MB)
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                triggerFilePicker(
+                                  ".jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime",
+                                )
+                              }
+                              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
+                            >
+                              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#5B00A3]/15 text-[#5B00A3] dark:text-purple-300">
+                                <ImageIcon className="h-4 w-4" />
+                              </span>
+                              <div>
+                                <p className="font-semibold">Photo / Video</p>
+                                <p className="text-[10px] text-muted-foreground">
+                                  JPG, PNG, WEBP, MP4, MOV
+                                </p>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => triggerFilePicker(".pdf,application/pdf")}
+                              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
+                            >
+                              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400">
+                                <FileText className="h-4 w-4" />
+                              </span>
+                              <div>
+                                <p className="font-semibold">PDF Document</p>
+                                <p className="text-[10px] text-muted-foreground">.pdf files</p>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                triggerFilePicker(
+                                  ".doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                )
+                              }
+                              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
+                            >
+                              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-500/15 text-sky-600 dark:text-sky-400">
+                                <FileText className="h-4 w-4" />
+                              </span>
+                              <div>
+                                <p className="font-semibold">Word / Office Doc</p>
+                                <p className="text-[10px] text-muted-foreground">
+                                  DOC, DOCX, XLSX, PPTX, TXT
+                                </p>
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                triggerFilePicker(
+                                  "image/jpeg,image/png,image/webp,image/gif,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip",
+                                )
+                              }
+                              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
+                            >
+                              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                                <Paperclip className="h-4 w-4" />
+                              </span>
+                              <div>
+                                <p className="font-semibold">Any Media / Safe File</p>
+                                <p className="text-[10px] text-muted-foreground">
+                                  Audio, Archives &amp; All Media
+                                </p>
+                              </div>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <Input
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        disabled={uploadingAttachment}
+                        placeholder={
+                          active.kind === "announcement"
+                            ? "Post announcement reply or update…"
+                            : active.kind === "direct" && otherParticipant
+                              ? `Message ${otherParticipant.fullName.split(" ")[0]}…`
+                              : `Message #${active.name}…`
+                        }
+                        className="h-10 text-xs sm:text-sm bg-background"
+                      />
+                      <Button
+                        type="submit"
+                        size="default"
+                        disabled={(!draft.trim() && !pendingAttachment) || uploadingAttachment}
+                        className="gap-1.5 h-10 px-4 shrink-0 shadow-xs bg-gradient-to-r from-[#5B00A3] to-[#8A007E] text-white hover:opacity-95"
+                      >
+                        {uploadingAttachment ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
+                          </>
+                        ) : (
+                          <>
+                            <Send className="h-4 w-4" /> Send
+                          </>
+                        )}
+                      </Button>
+                    </form>
+                  </>
+                ) : (
+                  <div className="mt-2 rounded-xl border border-border bg-muted/40 px-3 py-2 text-center text-xs text-muted-foreground">
+                    View-Only Access: replying and creating messages are disabled.
                   </div>
                 )}
-
-                {/* Message Composer Box */}
-                <form
-                  className="relative flex items-center gap-2 pt-2 border-t border-border"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void handleSendMessage();
-                  }}
-                >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    className="hidden"
-                    onChange={handleFilePicked}
-                  />
-
-                  <div ref={attachMenuRef} className="relative shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => setAttachMenuOpen((prev) => !prev)}
-                      disabled={uploadingAttachment}
-                      aria-label="Attach photo, video, audio, PDF or document"
-                      title="Attach media or document (max 10 MB)"
-                      className={cn(
-                        "flex h-10 w-10 items-center justify-center rounded-full border transition-all focus:outline-hidden focus:ring-2 focus:ring-[#5B00A3]",
-                        attachMenuOpen
-                          ? "border-[#5B00A3] bg-[#5B00A3] text-white shadow-sm"
-                          : "border-border bg-background text-foreground hover:border-[#8A007E]/60 hover:bg-[#5B00A3]/10",
-                      )}
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.25"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className={cn(
-                          "h-5 w-5 transition-transform duration-150",
-                          attachMenuOpen && "rotate-45",
-                        )}
-                        aria-hidden="true"
-                      >
-                        <path d="M12 5v14M5 12h14" />
-                      </svg>
-                    </button>
-
-                    {attachMenuOpen && (
-                      <div className="absolute bottom-12 left-0 z-40 w-60 rounded-2xl border border-border bg-card p-1.5 shadow-xl">
-                        <p className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                          Attach Media &amp; Files (max 10 MB)
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            triggerFilePicker(
-                              ".jpg,.jpeg,.png,.webp,.gif,.mp4,.webm,.mov,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime",
-                            )
-                          }
-                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
-                        >
-                          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#5B00A3]/15 text-[#5B00A3] dark:text-purple-300">
-                            <ImageIcon className="h-4 w-4" />
-                          </span>
-                          <div>
-                            <p className="font-semibold">Photo / Video</p>
-                            <p className="text-[10px] text-muted-foreground">
-                              JPG, PNG, WEBP, MP4, MOV
-                            </p>
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => triggerFilePicker(".pdf,application/pdf")}
-                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
-                        >
-                          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400">
-                            <FileText className="h-4 w-4" />
-                          </span>
-                          <div>
-                            <p className="font-semibold">PDF Document</p>
-                            <p className="text-[10px] text-muted-foreground">.pdf files</p>
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            triggerFilePicker(
-                              ".doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            )
-                          }
-                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
-                        >
-                          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-500/15 text-sky-600 dark:text-sky-400">
-                            <FileText className="h-4 w-4" />
-                          </span>
-                          <div>
-                            <p className="font-semibold">Word / Office Doc</p>
-                            <p className="text-[10px] text-muted-foreground">
-                              DOC, DOCX, XLSX, PPTX, TXT
-                            </p>
-                          </div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            triggerFilePicker(
-                              "image/jpeg,image/png,image/webp,image/gif,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip",
-                            )
-                          }
-                          className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left text-xs font-medium text-foreground hover:bg-muted/70 transition-colors"
-                        >
-                          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                            <Paperclip className="h-4 w-4" />
-                          </span>
-                          <div>
-                            <p className="font-semibold">Any Media / Safe File</p>
-                            <p className="text-[10px] text-muted-foreground">
-                              Audio, Archives &amp; All Media
-                            </p>
-                          </div>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <Input
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    disabled={uploadingAttachment}
-                    placeholder={
-                      active.kind === "announcement"
-                        ? "Post announcement reply or update…"
-                        : active.kind === "direct" && otherParticipant
-                          ? `Message ${otherParticipant.fullName.split(" ")[0]}…`
-                          : `Message #${active.name}…`
-                    }
-                    className="h-10 text-xs sm:text-sm bg-background"
-                  />
-                  <Button
-                    type="submit"
-                    size="default"
-                    disabled={(!draft.trim() && !pendingAttachment) || uploadingAttachment}
-                    className="gap-1.5 h-10 px-4 shrink-0 shadow-xs bg-gradient-to-r from-[#5B00A3] to-[#8A007E] text-white hover:opacity-95"
-                  >
-                    {uploadingAttachment ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" /> Uploading...
-                      </>
-                    ) : (
-                      <>
-                        <Send className="h-4 w-4" /> Send
-                      </>
-                    )}
-                  </Button>
-                </form>
               </CardContent>
             </>
           ) : (

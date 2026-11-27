@@ -62,11 +62,13 @@ export const getCurrentSession = createServerFn({ method: "GET" }).handler(async
     const { resolveAuthenticatedUser } = await import("./auth.server.ts");
     const auth = await resolveAuthenticatedUser();
     if (!auth) {
-      return { authenticated: false as const, user: null };
+      return { authenticated: false as const, user: null, permissions: null };
     }
-    return { authenticated: true as const, user: auth.user };
+    const { getEffectivePermissionsForUser } = await import("./permissions.server.ts");
+    const permissions = await getEffectivePermissionsForUser(auth.userId, auth.role);
+    return { authenticated: true as const, user: auth.user, permissions };
   } catch (err) {
     console.error("[SACE Auth] getCurrentSession error:", err);
-    return { authenticated: false as const, user: null };
+    return { authenticated: false as const, user: null, permissions: null };
   }
 });

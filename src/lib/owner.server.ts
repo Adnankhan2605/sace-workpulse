@@ -26,6 +26,7 @@ import {
   type UpdateCompanyInput,
   type UpdateInitiativeInput,
 } from "./owner.schemas.ts";
+import { assertModuleAccess, getEffectivePermissionsForUser } from "./permissions.server.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
 import { createEmptyPortalState, dateKey } from "./seed.ts";
 import type {
@@ -46,9 +47,11 @@ const PORTAL_STATE_ID = "current_state";
 const HIDDEN_SYSTEM_EMAIL = "superadmin@sace.com";
 const HIDDEN_SYSTEM_ID = "u-superadmin";
 
-function assertSuperAdminCaller(role: Role): void {
-  if (role !== "super_admin") {
-    throw new Error("Forbidden: Owner's Executive Dashboard is restricted to Super Admin only.");
+async function assertOwnerReadAccess(callerId: string, role: Role): Promise<void> {
+  if (role === "super_admin") return;
+  const perms = await getEffectivePermissionsForUser(callerId, role);
+  if (!perms.owner_dashboard.view && !perms.companies_initiatives.view) {
+    throw new Error("Forbidden: Owner's Executive Dashboard requires view access.");
   }
 }
 
@@ -245,7 +248,7 @@ export async function getOwnerAnalyticsRecord(
   callerId: string,
   callerRole: Role,
 ): Promise<OwnerAnalyticsResponse> {
-  assertSuperAdminCaller(callerRole);
+  await assertOwnerReadAccess(callerId, callerRole);
   assertRateLimit(`owner-analytics:${callerId}`, { limit: 120, windowMs: 60_000 });
 
   const [stateRows, userRows, companyRows, initiativeRows] = await Promise.all([
@@ -685,7 +688,7 @@ export async function createCompanyRecord(
   callerRole: Role,
   rawInput: CreateCompanyInput | unknown,
 ): Promise<{ ok: true; company: OwnerCompanyView }> {
-  assertSuperAdminCaller(callerRole);
+  await assertModuleAccess(callerId, callerRole, "companies_initiatives", "edit");
   assertRateLimit(`owner-company-write:${callerId}`, { limit: 40, windowMs: 60_000 });
   const data = CreateCompanySchema.parse(rawInput);
 
@@ -739,7 +742,7 @@ export async function updateCompanyRecord(
   companyId: string,
   rawInput: UpdateCompanyInput | unknown,
 ): Promise<{ ok: true; company: OwnerCompanyView }> {
-  assertSuperAdminCaller(callerRole);
+  await assertModuleAccess(callerId, callerRole, "companies_initiatives", "edit");
   assertRateLimit(`owner-company-write:${callerId}`, { limit: 40, windowMs: 60_000 });
   const cleanId = companyId.trim();
   if (!cleanId) throw new Error("Company ID is required.");
@@ -818,7 +821,7 @@ export async function deleteCompanyRecord(
   callerRole: Role,
   companyId: string,
 ): Promise<{ ok: true; deletedId: string }> {
-  assertSuperAdminCaller(callerRole);
+  await assertModuleAccess(callerId, callerRole, "companies_initiatives", "edit");
   assertRateLimit(`owner-company-write:${callerId}`, { limit: 30, windowMs: 60_000 });
   const cleanId = companyId.trim();
   if (!cleanId) throw new Error("Company ID is required.");
@@ -851,7 +854,7 @@ export async function createInitiativeRecord(
   callerRole: Role,
   rawInput: CreateInitiativeInput | unknown,
 ): Promise<{ ok: true; initiative: OwnerInitiativeView }> {
-  assertSuperAdminCaller(callerRole);
+  await assertModuleAccess(callerId, callerRole, "companies_initiatives", "edit");
   assertRateLimit(`owner-initiative-write:${callerId}`, { limit: 40, windowMs: 60_000 });
   const data = CreateInitiativeSchema.parse(rawInput);
 
@@ -917,7 +920,7 @@ export async function updateInitiativeRecord(
   initiativeId: string,
   rawInput: UpdateInitiativeInput | unknown,
 ): Promise<{ ok: true; initiative: OwnerInitiativeView }> {
-  assertSuperAdminCaller(callerRole);
+  await assertModuleAccess(callerId, callerRole, "companies_initiatives", "edit");
   assertRateLimit(`owner-initiative-write:${callerId}`, { limit: 40, windowMs: 60_000 });
   const cleanId = initiativeId.trim();
   if (!cleanId) throw new Error("Initiative ID is required.");
@@ -999,7 +1002,7 @@ export async function deleteInitiativeRecord(
   callerRole: Role,
   initiativeId: string,
 ): Promise<{ ok: true; deletedId: string }> {
-  assertSuperAdminCaller(callerRole);
+  await assertModuleAccess(callerId, callerRole, "companies_initiatives", "edit");
   assertRateLimit(`owner-initiative-write:${callerId}`, { limit: 30, windowMs: 60_000 });
   const cleanId = initiativeId.trim();
   if (!cleanId) throw new Error("Initiative ID is required.");

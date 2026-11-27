@@ -135,11 +135,14 @@ const SaveStateSchema = z.object({
   }),
 });
 
+import type { ModulePermissionsMap } from "./permissions.ts";
+
 function scopeStateForCaller(
   fullState: AppState,
   allUsers: User[],
   callerId: string,
   callerRole: User["role"],
+  perms?: ModulePermissionsMap,
 ): AppState {
   const isSuperAdmin = callerRole === "super_admin";
   const isAdmin = callerRole === "admin";
@@ -205,28 +208,45 @@ function scopeStateForCaller(
       comments: isPrivileged ? t.comments : (t.comments ?? []).filter((c) => !c.internal),
     }));
 
+  const canViewAttendance = perms ? perms.attendance.view : true;
+  const canViewTasks = perms ? perms.tasks.view : true;
+  const canViewLeaves = perms ? perms.leave.view : true;
+  const canViewLeads = perms ? perms.dashboard.view : true;
+  const canViewMessages = perms ? perms.messages_tickets.view : true;
+  const canViewAudit = perms ? perms.audit.view : isSuperAdmin;
+  const canViewEod = perms ? perms.eod.view : true;
+  const canViewVault = perms ? perms.vault.view : true;
+
   return {
     users: scopedUsers,
-    attendance: (fullState.attendance ?? []).filter((a) => teamIds.has(a.userId)),
-    tasks: (fullState.tasks ?? []).filter(
-      (t) => isSuperAdmin || teamIds.has(t.assigneeId) || t.assignedById === callerId,
-    ),
-    leaves: (fullState.leaves ?? []).filter((l) => teamIds.has(l.userId)),
-    leads: (fullState.leads ?? []).filter((l) => isPrivileged || l.visibility === "public"),
-    conversations: scopedConversations,
-    messages: scopedMessages,
-    tickets: scopedTickets,
-    awards: fullState.awards ?? [],
+    attendance: canViewAttendance
+      ? (fullState.attendance ?? []).filter((a) => teamIds.has(a.userId))
+      : [],
+    tasks: canViewTasks
+      ? (fullState.tasks ?? []).filter(
+          (t) => isSuperAdmin || teamIds.has(t.assigneeId) || t.assignedById === callerId,
+        )
+      : [],
+    leaves: canViewLeaves ? (fullState.leaves ?? []).filter((l) => teamIds.has(l.userId)) : [],
+    leads: canViewLeads
+      ? (fullState.leads ?? []).filter((l) => isPrivileged || l.visibility === "public")
+      : [],
+    conversations: canViewMessages ? scopedConversations : [],
+    messages: canViewMessages ? scopedMessages : [],
+    tickets: canViewMessages ? scopedTickets : [],
+    awards: canViewLeads ? (fullState.awards ?? []) : [],
     notifications: (fullState.notifications ?? []).filter((n) => n.userId === callerId),
-    audit: isSuperAdmin
-      ? (fullState.audit ?? [])
-      : isAdmin
-        ? (fullState.audit ?? []).filter((a) => teamIds.has(a.actorId))
-        : [],
-    eodReports: (fullState.eodReports ?? []).filter((r) => teamIds.has(r.userId)),
-    holidays: fullState.holidays ?? [],
-    monthlyReviews: (fullState.monthlyReviews ?? []).filter((r) => teamIds.has(r.userId)),
-    vaultItems: scopedVaults,
+    audit: canViewAudit
+      ? isSuperAdmin || perms?.audit.view
+        ? (fullState.audit ?? [])
+        : (fullState.audit ?? []).filter((a) => teamIds.has(a.actorId))
+      : [],
+    eodReports: canViewEod ? (fullState.eodReports ?? []).filter((r) => teamIds.has(r.userId)) : [],
+    holidays: canViewLeaves ? (fullState.holidays ?? []) : [],
+    monthlyReviews: canViewTasks
+      ? (fullState.monthlyReviews ?? []).filter((r) => teamIds.has(r.userId))
+      : [],
+    vaultItems: canViewVault ? scopedVaults : [],
     officeGeofence: fullState.officeGeofence ?? { ...DEFAULT_OFFICE_GEOFENCE },
     branding: fullState.branding ?? { ...DEFAULT_PORTAL_BRANDING },
     userPresence: fullState.userPresence ?? {},
@@ -244,15 +264,17 @@ export const getScopedPortalState = createServerFn({ method: "GET" })
     const { db } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
     const { toPublicUser } = await import("./auth.server.ts");
+    const { getEffectivePermissionsForUser } = await import("./permissions.server.ts");
     const { createEmptyPortalState } = await import("./seed.ts");
 
-    const [stateRows, userRows] = await Promise.all([
+    const [stateRows, userRows, perms] = await Promise.all([
       db
         .select()
         .from(schema.portalState)
         .where(eq(schema.portalState.id, PORTAL_STATE_ID))
         .limit(1),
       db.select().from(schema.users),
+      getEffectivePermissionsForUser(context.userId, context.role),
     ]);
 
     const rawState = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
@@ -260,7 +282,7 @@ export const getScopedPortalState = createServerFn({ method: "GET" })
 
     return {
       ok: true as const,
-      data: scopeStateForCaller(rawState, publicUsers, context.userId, context.role),
+      data: scopeStateForCaller(rawState, publicUsers, context.userId, context.role, perms),
       source: "postgresql",
     };
   });
@@ -276,15 +298,17 @@ export const saveScopedPortalState = createServerFn({ method: "POST" })
     const { db } = await import("../db/index.ts");
     const schema = await import("../db/schema.ts");
     const { stripCredentialsFromUsers, toPublicUser } = await import("./auth.server.ts");
+    const { getEffectivePermissionsForUser } = await import("./permissions.server.ts");
     const { createEmptyPortalState } = await import("./seed.ts");
 
-    const [stateRows, userRows] = await Promise.all([
+    const [stateRows, userRows, perms] = await Promise.all([
       db
         .select()
         .from(schema.portalState)
         .where(eq(schema.portalState.id, PORTAL_STATE_ID))
         .limit(1),
       db.select().from(schema.users),
+      getEffectivePermissionsForUser(context.userId, context.role),
     ]);
 
     const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
@@ -295,6 +319,57 @@ export const saveScopedPortalState = createServerFn({ method: "POST" })
     const callerId = context.userId;
 
     const incoming = data.state;
+
+    if (!isSuperAdmin) {
+      const existingScoped = scopeStateForCaller(
+        existing,
+        publicUsers,
+        callerId,
+        context.role,
+        perms,
+      );
+      const changed = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
+      const stripReadBy = (msgs: Message[]) => msgs.map(({ readBy: _rb, ...rest }) => rest);
+
+      if (
+        !perms.tasks.edit &&
+        (changed(existingScoped.tasks, incoming.tasks) ||
+          changed(existingScoped.monthlyReviews, incoming.monthlyReviews))
+      ) {
+        throw new Error("Forbidden: View-Only access for Tasks & Planner.");
+      }
+      if (!perms.attendance.edit && changed(existingScoped.attendance, incoming.attendance)) {
+        throw new Error("Forbidden: View-Only access for Attendance & Punch In/Out.");
+      }
+      if (!perms.eod.edit && changed(existingScoped.eodReports, incoming.eodReports)) {
+        throw new Error("Forbidden: View-Only access for EOD Reports.");
+      }
+      if (
+        !perms.leave.edit &&
+        (changed(existingScoped.leaves, incoming.leaves) ||
+          changed(existingScoped.holidays, incoming.holidays))
+      ) {
+        throw new Error("Forbidden: View-Only access for Leave Management.");
+      }
+      if (
+        !perms.messages_tickets.edit &&
+        (changed(existingScoped.conversations, incoming.conversations) ||
+          changed(stripReadBy(existingScoped.messages), stripReadBy(incoming.messages)) ||
+          changed(existingScoped.tickets, incoming.tickets))
+      ) {
+        throw new Error("Forbidden: View-Only access for Messages & Support Tickets.");
+      }
+      if (!perms.vault.edit && changed(existingScoped.vaultItems, incoming.vaultItems)) {
+        throw new Error("Forbidden: View-Only access for Vault / Credentials.");
+      }
+      if (
+        !perms.dashboard.edit &&
+        (changed(existingScoped.leads, incoming.leads) ||
+          changed(existingScoped.awards, incoming.awards))
+      ) {
+        throw new Error("Forbidden: View-Only access for Dashboard & Daily Vision.");
+      }
+    }
 
     // 1. Vault items: caller may only insert/update/delete items they created or mark received items checked
     const incomingVaultMap = new Map(incoming.vaultItems.map((v) => [v.id, v]));
@@ -694,6 +769,9 @@ export const saveOfficeGeofenceConfig = createServerFn({ method: "POST" })
     ]);
 
     const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "settings_integrations", "edit");
+
     const canConfigure =
       context.role === "super_admin" ||
       context.role === "admin" ||
@@ -785,6 +863,9 @@ export const punchInWithGeofence = createServerFn({ method: "POST" })
   .middleware([requirePortalAuth])
   .inputValidator((input: unknown) => PunchInGeofenceSchema.parse(input))
   .handler(async ({ data, context }) => {
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "attendance", "edit");
+
     const { assertRateLimit } = await import("./rate-limit.server.ts");
     assertRateLimit(`punch-in:${context.userId}`, { limit: 20, windowMs: 60_000 });
 
@@ -1061,6 +1142,9 @@ export const savePortalBrandingConfig = createServerFn({ method: "POST" })
     ]);
 
     const existing = (stateRows[0]?.data as AppState | undefined) ?? createEmptyPortalState();
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "settings_integrations", "edit");
+
     const canConfigure =
       context.role === "super_admin" ||
       context.role === "admin" ||

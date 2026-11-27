@@ -1,4 +1,13 @@
-import { boolean, integer, jsonb, numeric, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  integer,
+  jsonb,
+  numeric,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
 export const portalState = pgTable("portal_state", {
   id: text("id").primaryKey(),
@@ -223,6 +232,47 @@ export const initiatives = pgTable("initiatives", {
   progress: integer("progress").notNull().default(0),
   dueDate: text("due_date"),
   createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const rolePermissions = pgTable(
+  "role_permissions",
+  {
+    role: text("role").notNull(),
+    moduleKey: text("module_key").notNull(),
+    canView: boolean("can_view").notNull().default(true),
+    canEdit: boolean("can_edit").notNull().default(true),
+    updatedAt: text("updated_at").notNull(),
+    updatedBy: text("updated_by"),
+  },
+  (table) => [primaryKey({ columns: [table.role, table.moduleKey] })],
+);
+
+export const userPermissionOverrides = pgTable(
+  "user_permission_overrides",
+  {
+    userId: text("user_id").notNull(),
+    moduleKey: text("module_key").notNull(),
+    canView: boolean("can_view").notNull().default(true),
+    canEdit: boolean("can_edit").notNull().default(true),
+    updatedAt: text("updated_at").notNull(),
+    updatedBy: text("updated_by"),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.moduleKey] })],
+);
+
+export const notes = pgTable("notes", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  title: text("title").notNull().default(""),
+  content: text("content").notNull(),
+  inkId: text("ink_id").notNull().default("purple"),
+  paperId: text("paper_id").notNull().default("butter"),
+  soundEnabled: boolean("sound_enabled").notNull().default(true),
+  reminderAt: text("reminder_at"),
+  reminderTriggered: boolean("reminder_triggered").notNull().default(false),
+  reminderDismissed: boolean("reminder_dismissed").notNull().default(false),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

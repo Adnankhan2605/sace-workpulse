@@ -14,6 +14,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppProvider } from "@/lib/store";
 import { Toaster } from "@/components/ui/sonner";
 import { AddyAssistant } from "@/components/addy-assistant";
+import { ReminderWatcher } from "@/components/reminder-watcher";
 
 function NotFoundComponent() {
   return (
@@ -143,6 +144,7 @@ function RootComponent() {
       <AppProvider>
         <Outlet />
         <Toaster richColors position="top-right" />
+        <ReminderWatcher />
         <AddyAssistant />
       </AppProvider>
     </QueryClientProvider>

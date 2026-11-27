@@ -59,8 +59,9 @@ const STATUSES: TicketStatus[] = [
 ];
 
 function TicketsPage() {
-  const { state, me, can, update, log, notify } = useApp();
+  const { state, me, can, canEditModule, update, log, notify } = useApp();
   const isAgent = can("view_all_tickets");
+  const canEditTickets = canEditModule("messages_tickets");
   const [filter, setFilter] = React.useState<"all" | TicketStatus>("all");
 
   if (!me) return null;
@@ -78,31 +79,33 @@ function TicketsPage() {
           isAgent ? "Every ticket raised by the team." : "Your requests and their progress."
         }
         actions={
-          <div className="flex items-center gap-2">
-            {tickets.some((t) => t.status === "created" || t.status === "open") && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full text-xs"
-                onClick={() => {
-                  update((d) => {
-                    d.tickets.forEach((t) => {
-                      if (t.status === "created") t.status = "open";
+          canEditTickets ? (
+            <div className="flex items-center gap-2">
+              {tickets.some((t) => t.status === "created" || t.status === "open") && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full text-xs"
+                  onClick={() => {
+                    update((d) => {
+                      d.tickets.forEach((t) => {
+                        if (t.status === "created") t.status = "open";
+                      });
+                      d.notifications.forEach((n) => {
+                        if (n.userId === me?.id && n.href?.startsWith("/tickets")) {
+                          n.read = true;
+                        }
+                      });
                     });
-                    d.notifications.forEach((n) => {
-                      if (n.userId === me?.id && n.href?.startsWith("/tickets")) {
-                        n.read = true;
-                      }
-                    });
-                  });
-                  toast.success("All tickets acknowledged");
-                }}
-              >
-                Acknowledge all
-              </Button>
-            )}
-            <NewTicket />
-          </div>
+                    toast.success("All tickets acknowledged");
+                  }}
+                >
+                  Acknowledge all
+                </Button>
+              )}
+              <NewTicket />
+            </div>
+          ) : undefined
         }
       />
 
@@ -171,9 +174,9 @@ function TicketsPage() {
                     </div>
                   )}
 
-                  <ReplyBox ticketId={t.id} isAgent={isAgent} />
+                  {canEditTickets && <ReplyBox ticketId={t.id} isAgent={isAgent} />}
 
-                  {isAgent && (
+                  {isAgent && canEditTickets && (
                     <div className="mt-3 flex flex-wrap items-center gap-2">
                       <Select
                         value={t.status}

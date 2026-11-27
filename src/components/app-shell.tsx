@@ -11,6 +11,7 @@ import {
   ClipboardList,
   Clock,
   Crown,
+  Eye,
   FileBarChart,
   FileSignature,
   FileText,
@@ -35,6 +36,7 @@ import {
   X,
 } from "lucide-react";
 import { useApp, type Perm, dateKey } from "@/lib/store";
+import { getModuleKeyForRoute, type ModuleKey } from "@/lib/permissions";
 import { resolveEffectiveLogoSrc } from "@/lib/branding";
 import { formatDistanceMeters } from "@/lib/geofence";
 import { usePunchOutGuard } from "@/hooks/use-punch-out";
@@ -69,6 +71,7 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   roles: Role[];
   perm?: Perm;
+  moduleKey?: ModuleKey;
 }
 
 const NAV: NavItem[] = [
@@ -77,71 +80,105 @@ const NAV: NavItem[] = [
     label: "DASHBOARD",
     icon: LayoutDashboard,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "dashboard",
   },
   {
     to: "/owner-dashboard",
     label: "Owner's Dashboard",
     icon: Crown,
-    roles: ["super_admin"],
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "owner_dashboard",
   },
-  { to: "/tasks", label: "Tasks", icon: ClipboardList, roles: ["super_admin", "admin", "member"] },
-  { to: "/eod", label: "EOD Reports", icon: FileText, roles: ["super_admin", "admin", "member"] },
+  {
+    to: "/tasks",
+    label: "Tasks",
+    icon: ClipboardList,
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "tasks",
+  },
+  {
+    to: "/eod",
+    label: "EOD Reports",
+    icon: FileText,
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "eod",
+  },
   {
     to: "/mom",
     label: "MOM",
     icon: FileSignature,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "mom",
   },
   {
     to: "/attendance",
     label: "Attendance",
     icon: CalendarDays,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "attendance",
   },
-  { to: "/leave", label: "Leave Requests", icon: Plane, roles: ["super_admin", "admin", "member"] },
+  {
+    to: "/leave",
+    label: "Leave Requests",
+    icon: Plane,
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "leave",
+  },
   {
     to: "/holidays",
     label: "Holidays",
     icon: CalendarHeart,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "leave",
   },
   {
     to: "/reviews",
     label: "Monthly Reviews",
     icon: ClipboardCheck,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "tasks",
   },
-  { to: "/leads", label: "Leads", icon: Fingerprint, roles: ["super_admin", "admin", "member"] },
+  {
+    to: "/leads",
+    label: "Leads",
+    icon: Fingerprint,
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "dashboard",
+  },
   {
     to: "/messages",
     label: "Messages",
     icon: MessageSquare,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "messages_tickets",
   },
   {
     to: "/tickets",
     label: "Support Tickets",
     icon: LifeBuoy,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "messages_tickets",
   },
   {
     to: "/vault",
     label: "Vault",
     icon: Lock,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "vault",
   },
   {
     to: "/leaderboard",
     label: "Leaderboard",
     icon: Trophy,
     roles: ["super_admin", "admin", "member"],
+    moduleKey: "dashboard",
   },
   {
     to: "/team",
     label: "Team & Accounts",
     icon: Users,
-    roles: ["super_admin", "admin"],
-    perm: "manage_users",
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "user_management",
   },
   {
     to: "/reports",
@@ -149,10 +186,23 @@ const NAV: NavItem[] = [
     icon: FileBarChart,
     roles: ["super_admin", "admin"],
     perm: "view_reports",
+    moduleKey: "eod",
   },
-  { to: "/audit", label: "Audit Logs", icon: ScrollText, roles: ["super_admin"] },
+  {
+    to: "/audit",
+    label: "Audit Logs",
+    icon: ScrollText,
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "audit",
+  },
   { to: "/roles", label: "Roles & Permissions", icon: ShieldCheck, roles: ["super_admin"] },
-  { to: "/settings", label: "Settings", icon: Settings, roles: ["super_admin", "admin", "member"] },
+  {
+    to: "/settings",
+    label: "Settings",
+    icon: Settings,
+    roles: ["super_admin", "admin", "member"],
+    moduleKey: "settings_integrations",
+  },
 ];
 
 export function roleLabel(role: Role) {
@@ -518,7 +568,7 @@ function NotificationBell() {
 }
 
 function HeaderPunchStatus({ onOpenEod }: { onOpenEod: () => void }) {
-  const { state, me, punchInWithLocation } = useApp();
+  const { state, me, punchInWithLocation, canViewModule, canEditModule } = useApp();
   const [punchBusy, setPunchBusy] = React.useState(false);
   const todayKey = dateKey(new Date());
   const rec = state.attendance.find((a) => a.userId === me?.id && a.date === todayKey);
@@ -532,8 +582,13 @@ function HeaderPunchStatus({ onOpenEod }: { onOpenEod: () => void }) {
     handlePunchOutClick,
   } = usePunchOutGuard(onOpenEod);
 
+  if (!canViewModule("attendance")) {
+    return null;
+  }
+  const canEditAttendance = canEditModule("attendance");
+
   const handleQuickPunchIn = async () => {
-    if (punchBusy) return;
+    if (punchBusy || !canEditAttendance) return;
     setPunchBusy(true);
     const res = await punchInWithLocation("header");
     setPunchBusy(false);
@@ -578,21 +633,23 @@ function HeaderPunchStatus({ onOpenEod }: { onOpenEod: () => void }) {
             </span>
           )}
         </Link>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handlePunchOutClick}
-          className="h-8 gap-1 text-xs border-border"
-          title={
-            logoutConstraint.blocked && logoutConstraint.requiredLogoutAt
-              ? `Late arrival (+${logoutConstraint.lateMinutes}m): Logout allowed after ${fmtTime(logoutConstraint.requiredLogoutAt)}`
-              : canPunchOut && canPunchOutByTasks
-                ? "Punch out and submit End-of-Day report"
-                : "Submit proof for at least one completed task before punching out"
-          }
-        >
-          <LogOut className="h-3.5 w-3.5" /> Punch out
-        </Button>
+        {canEditAttendance && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handlePunchOutClick}
+            className="h-8 gap-1 text-xs border-border"
+            title={
+              logoutConstraint.blocked && logoutConstraint.requiredLogoutAt
+                ? `Late arrival (+${logoutConstraint.lateMinutes}m): Logout allowed after ${fmtTime(logoutConstraint.requiredLogoutAt)}`
+                : canPunchOut && canPunchOutByTasks
+                  ? "Punch out and submit End-of-Day report"
+                  : "Submit proof for at least one completed task before punching out"
+            }
+          >
+            <LogOut className="h-3.5 w-3.5" /> Punch out
+          </Button>
+        )}
       </div>
     );
   }
@@ -618,19 +675,21 @@ function HeaderPunchStatus({ onOpenEod }: { onOpenEod: () => void }) {
         <span className="h-2 w-2 rounded-full bg-amber-500" />
         <span>Not punched in</span>
       </Link>
-      <Button
-        size="sm"
-        disabled={punchBusy}
-        onClick={handleQuickPunchIn}
-        className="h-8 gap-1.5 text-xs shadow-xs"
-      >
-        {punchBusy ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : (
-          <LogIn className="h-3.5 w-3.5" />
-        )}
-        {punchBusy ? "Locating..." : "Punch in"}
-      </Button>
+      {canEditAttendance && (
+        <Button
+          size="sm"
+          disabled={punchBusy}
+          onClick={handleQuickPunchIn}
+          className="h-8 gap-1.5 text-xs shadow-xs"
+        >
+          {punchBusy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <LogIn className="h-3.5 w-3.5" />
+          )}
+          {punchBusy ? "Locating..." : "Punch in"}
+        </Button>
+      )}
     </div>
   );
 }
@@ -680,7 +739,17 @@ function HeaderPresencePill({ onClick }: { onClick: () => void }) {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { me, ready, logout, can, unreadCounts, markModuleRead, branding } = useApp();
+  const {
+    me,
+    ready,
+    logout,
+    can,
+    canViewModule,
+    canEditModule,
+    unreadCounts,
+    markModuleRead,
+    branding,
+  } = useApp();
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const [sidebarOpen, setSidebarOpen] = React.useState(true);
@@ -691,8 +760,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setEodOpen(true),
   );
 
+  const canViewBattalion = canViewModule("battalion");
+  const canEditBattalion = canEditModule("battalion");
+
   React.useEffect(() => {
-    if (!ready || !me) return;
+    if (!ready || !me || !canViewBattalion || !canEditBattalion) return;
     try {
       const alreadySet = window.sessionStorage.getItem(PRESENCE_SESSION_KEY);
       if (!alreadySet) {
@@ -702,7 +774,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     } catch {
       // Ignore storage access restrictions
     }
-  }, [ready, me]);
+  }, [ready, me, canViewBattalion, canEditBattalion]);
 
   React.useEffect(() => {
     if (localStorage.getItem(SIDEBAR_KEY) === "closed") setSidebarOpen(false);
@@ -736,7 +808,39 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const items = NAV.filter((i) => i.roles.includes(me.role) && (!i.perm || can(i.perm)));
+  const items = NAV.filter((i) => {
+    if (!i.roles.includes(me.role)) return false;
+    if (i.to === "/owner-dashboard") {
+      return canViewModule("owner_dashboard") || canViewModule("companies_initiatives");
+    }
+    if (i.moduleKey && !canViewModule(i.moduleKey)) {
+      return false;
+    }
+    if (i.perm && me.role === "admin" && i.to === "/reports" && !can(i.perm)) {
+      return false;
+    }
+    return true;
+  });
+
+  const routeModule = getModuleKeyForRoute(pathname);
+  const isOwnerRoute = pathname === "/owner-dashboard" || pathname.startsWith("/owner-dashboard/");
+  const isRolesRoute = pathname === "/roles" || pathname.startsWith("/roles/");
+  const canViewCurrentRoute = isRolesRoute
+    ? true
+    : isOwnerRoute
+      ? canViewModule("owner_dashboard") || canViewModule("companies_initiatives")
+      : routeModule
+        ? canViewModule(routeModule)
+        : true;
+  const canEditCurrentRoute = isRolesRoute
+    ? me.role === "super_admin"
+    : isOwnerRoute
+      ? canEditModule("owner_dashboard") || canEditModule("companies_initiatives")
+      : routeModule
+        ? canEditModule(routeModule)
+        : true;
+  const showViewOnlyBanner =
+    canViewCurrentRoute && Boolean(routeModule) && !isRolesRoute && !canEditCurrentRoute;
 
   const effectiveLogo = resolveEffectiveLogoSrc(branding?.logoUrl);
   const orgName = branding?.organisationName?.trim() || "WORKPULSE";
@@ -812,7 +916,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </span>
                 )}
               </Link>
-              {item.to === "/dashboard" && <BattalionNavItem active={pathname === "/battalion"} />}
+              {item.to === "/dashboard" && canViewBattalion && (
+                <BattalionNavItem active={pathname === "/battalion"} />
+              )}
             </React.Fragment>
           );
         })}
@@ -821,7 +927,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="border-t border-sidebar-border p-3">
         <button
           onClick={() => {
-            if (isPunchedIn) {
+            if (isPunchedIn && canEditModule("attendance") && canEditModule("eod")) {
               handleSidebarPunchOut();
               return;
             }
@@ -867,12 +973,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </p>
           </div>
           <DualTimezoneClock variant="compact" className="hidden lg:flex" />
-          <HeaderPresencePill
-            onClick={() => {
-              setIsMandatoryPresencePrompt(false);
-              setPresenceModalOpen(true);
-            }}
-          />
+          {canViewBattalion && (
+            <HeaderPresencePill
+              onClick={() => {
+                if (!canEditBattalion) {
+                  toast.info(
+                    "View-Only Access: Live availability editing is disabled for your account.",
+                  );
+                  return;
+                }
+                setIsMandatoryPresencePrompt(false);
+                setPresenceModalOpen(true);
+              }}
+            />
+          )}
           <HeaderPunchStatus onOpenEod={() => setEodOpen(true)} />
           <NotificationBell />
           <Link to="/settings" aria-label="Profile settings">
@@ -881,7 +995,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </header>
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
-          {children}
+          {!canViewCurrentRoute ? (
+            <NoAccess />
+          ) : (
+            <>
+              {showViewOnlyBanner && (
+                <div className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-purple-200 bg-purple-50/80 px-4 py-2.5 text-xs text-[#5B00A3]">
+                  <div className="flex items-center gap-2 font-medium">
+                    <span className="inline-flex items-center gap-1 rounded-md bg-[#5B00A3] px-2 py-0.5 text-[11px] font-semibold text-white">
+                      <Eye className="h-3 w-3" />
+                      View-Only Access
+                    </span>
+                    <span>
+                      You can inspect this module, while creating, editing, approving, and deleting
+                      actions are disabled.
+                    </span>
+                  </div>
+                </div>
+              )}
+              {children}
+            </>
+          )}
         </main>
       </div>
       <PresenceSetupModal

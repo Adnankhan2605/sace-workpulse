@@ -253,6 +253,19 @@ export function clearPortalClientStorage(userId?: string | null): void {
     window.sessionStorage.removeItem("sace_vault_paste_draft");
     window.sessionStorage.removeItem("sace_vault_paste_recipient");
     window.sessionStorage.removeItem("sace_vision_dismissed");
+    if (userId) {
+      window.sessionStorage.removeItem(`sace_vision_dismissed_${userId}`);
+    }
+    const sessionKeysToDelete: string[] = [];
+    for (let i = 0; i < window.sessionStorage.length; i += 1) {
+      const k = window.sessionStorage.key(i);
+      if (k && k.startsWith("sace_vision_dismissed_")) {
+        sessionKeysToDelete.push(k);
+      }
+    }
+    for (const k of sessionKeysToDelete) {
+      window.sessionStorage.removeItem(k);
+    }
     window.sessionStorage.removeItem("workpulse_presence_set");
   } catch {
     // Ignore storage access errors in private contexts

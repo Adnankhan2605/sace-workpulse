@@ -8,6 +8,7 @@ import {
   stripCredentialsFromUsers,
   toPublicUser,
 } from "./auth.server.ts";
+import { assertModuleAccess, hasModuleAccess } from "./permissions.server.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
 import {
   CreateAccountSchema,
@@ -48,18 +49,13 @@ async function syncUsersToPortalState(): Promise<void> {
 }
 
 export async function listUsersRecord(caller: CallerContext): Promise<User[]> {
+  await assertModuleAccess(caller.userId, caller.role, "user_management", "view");
   const rows = await db.select().from(schema.users);
   const publicUsers = rows.map(toPublicUser);
   if (caller.role === "super_admin") {
     return publicUsers;
   }
   if (caller.role === "admin") {
-    const perms = await getAdminPermsFromState();
-    if (perms.includes("manage_users")) {
-      return publicUsers.filter(
-        (u) => u.reportingAdminId === caller.userId || u.id === caller.userId,
-      );
-    }
     return publicUsers.filter(
       (u) => u.reportingAdminId === caller.userId || u.id === caller.userId,
     );
@@ -72,15 +68,15 @@ export async function createAccountRecord(
   rawInput: CreateAccountInput | unknown,
 ): Promise<{ ok: true; user: User }> {
   const data = CreateAccountSchema.parse(normalizeAccountPayloadKeys(rawInput));
+  await assertModuleAccess(caller.userId, caller.role, "user_management", "edit");
 
   const isSuperAdmin = caller.role === "super_admin";
   if (!isSuperAdmin) {
-    if (caller.role !== "admin") {
-      throw new Error("Forbidden: Only a Super Admin or authorized Admin can create accounts.");
-    }
-    const adminPerms = await getAdminPermsFromState();
-    if (!adminPerms.includes("manage_users")) {
-      throw new Error("Forbidden: You do not have permission to create team accounts.");
+    if (caller.role === "admin") {
+      const adminPerms = await getAdminPermsFromState();
+      if (!adminPerms.includes("manage_users")) {
+        throw new Error("Forbidden: You do not have permission to create team accounts.");
+      }
     }
     if (data.role !== "member") {
       throw new Error("Forbidden: Only a Super Admin can create Admin or Super Admin accounts.");
@@ -214,7 +210,83 @@ export async function saveAccountRecord(
   const isAdmin = caller.role === "admin";
   const isSelf = data.userId === caller.userId;
 
-  if (!isSuperAdmin && !isSelf && !isAdmin) {
+  const hasPolicyChange =
+    data.shiftStartTime !== undefined ||
+    data.shiftEndTime !== undefined ||
+    data.weekOffs !== undefined ||
+    data.workMode !== undefined ||
+    data.geoFenceMandatory !== undefined;
+
+  const onlyDailyVisionChange =
+    isSelf &&
+    data.dailyVision !== undefined &&
+    data.fullName === undefined &&
+    data.email === undefined &&
+    data.designation === undefined &&
+    data.department === undefined &&
+    data.avatarUrl === undefined &&
+    data.active === undefined &&
+    data.password === undefined &&
+    data.role === undefined &&
+    data.reportingAdminId === undefined &&
+    data.casualBalance === undefined &&
+    data.sickBalance === undefined &&
+    !hasPolicyChange;
+
+  const onlyLeaveBalanceChange =
+    data.fullName === undefined &&
+    data.email === undefined &&
+    data.designation === undefined &&
+    data.department === undefined &&
+    data.dailyVision === undefined &&
+    data.avatarUrl === undefined &&
+    data.active === undefined &&
+    data.password === undefined &&
+    data.role === undefined &&
+    data.reportingAdminId === undefined &&
+    data.shiftStartTime === undefined &&
+    data.shiftEndTime === undefined &&
+    data.weekOffs === undefined &&
+    data.workMode === undefined &&
+    data.geoFenceMandatory === undefined &&
+    (data.casualBalance !== undefined || data.sickBalance !== undefined);
+
+  if (onlyDailyVisionChange) {
+    const canDashboardEdit = await hasModuleAccess(caller.userId, caller.role, "dashboard", "edit");
+    const canSettingsEdit = await hasModuleAccess(
+      caller.userId,
+      caller.role,
+      "settings_integrations",
+      "edit",
+    );
+    if (!canDashboardEdit && !canSettingsEdit) {
+      throw new Error(
+        "Forbidden: View-Only access for Dashboard & Daily Vision. Editing is disabled for your account.",
+      );
+    }
+  } else if (isSelf) {
+    await assertModuleAccess(caller.userId, caller.role, "settings_integrations", "edit");
+  } else if (onlyLeaveBalanceChange) {
+    const canLeaveEdit = await hasModuleAccess(caller.userId, caller.role, "leave", "edit");
+    const canUserEdit = await hasModuleAccess(
+      caller.userId,
+      caller.role,
+      "user_management",
+      "edit",
+    );
+    if (!canLeaveEdit && !canUserEdit) {
+      throw new Error(
+        "Forbidden: View-Only access for Leave Management. Balance updates are disabled.",
+      );
+    }
+  } else {
+    await assertModuleAccess(caller.userId, caller.role, "user_management", "edit");
+  }
+
+  const canManageUsersOverride =
+    !isSelf && (await hasModuleAccess(caller.userId, caller.role, "user_management", "edit"));
+
+  if (!isSuperAdmin && !isSelf && !isAdmin && !canManageUsersOverride) {
     throw new Error("Forbidden: You can only edit your own profile.");
   }
 
@@ -228,13 +300,6 @@ export async function saveAccountRecord(
     throw new Error("Account not found.");
   }
 
-  const hasPolicyChange =
-    data.shiftStartTime !== undefined ||
-    data.shiftEndTime !== undefined ||
-    data.weekOffs !== undefined ||
-    data.workMode !== undefined ||
-    data.geoFenceMandatory !== undefined;
-
   if (!isSuperAdmin) {
     if (data.role !== undefined || data.reportingAdminId !== undefined) {
       throw new Error("Forbidden: Only a Super Admin can change roles or reporting lines.");
@@ -242,7 +307,8 @@ export async function saveAccountRecord(
 
     if (!isSelf) {
       const adminPerms = isAdmin ? await getAdminPermsFromState() : [];
-      const canManageUsers = isAdmin && adminPerms.includes("manage_users");
+      const canManageUsers =
+        (isAdmin && adminPerms.includes("manage_users")) || canManageUsersOverride;
       const canApproveLeave = isAdmin && adminPerms.includes("approve_leave");
 
       const onlyBalanceOrPolicyChange =
@@ -258,7 +324,7 @@ export async function saveAccountRecord(
       const isAuthorizedMemberEdit =
         canManageUsers &&
         targetUser.role === "member" &&
-        targetUser.reportingAdminId === caller.userId &&
+        (targetUser.reportingAdminId === caller.userId || canManageUsersOverride) &&
         data.password === undefined &&
         data.dailyVision === undefined &&
         data.avatarUrl === undefined;
@@ -367,10 +433,8 @@ export async function deleteAccountRecord(
   rawInput: { userId: string } | unknown,
 ): Promise<{ ok: true; deletedUserId: string }> {
   const data = DeleteAccountSchema.parse(rawInput);
+  await assertModuleAccess(caller.userId, caller.role, "user_management", "edit");
 
-  if (caller.role !== "super_admin" && caller.role !== "admin") {
-    throw new Error("Forbidden: Only a Super Admin or Admin can delete an account.");
-  }
   if (
     data.userId === caller.userId ||
     data.userId === "u-hakeem" ||
@@ -401,6 +465,8 @@ export async function deleteAccountRecord(
         "Forbidden: Admins can only delete Team Member accounts that report directly to them.",
       );
     }
+  } else if (caller.role !== "super_admin" && targetUser.role !== "member") {
+    throw new Error("Forbidden: Only a Super Admin can delete Admin or Super Admin accounts.");
   }
 
   await db.delete(schema.users).where(eq(schema.users.id, data.userId));

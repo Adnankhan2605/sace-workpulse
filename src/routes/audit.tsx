@@ -31,10 +31,10 @@ export const Route = createFileRoute("/audit")({
 });
 
 function AuditPage() {
-  const { state, me } = useApp();
+  const { state, me, canViewModule } = useApp();
   const [q, setQ] = React.useState("");
   if (!me) return null;
-  if (me.role !== "super_admin") return <NoAccess />;
+  if (!canViewModule("audit")) return <NoAccess />;
 
   const logs = state.audit.filter((l) => {
     const actor = state.users.find((u) => u.id === l.actorId)?.fullName ?? "";

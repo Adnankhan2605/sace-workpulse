@@ -598,16 +598,18 @@ export function MomEditor({
               {saving ? "Saving..." : "Save MOM"}
             </Button>
           )}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShareOpen(true)}
-            className="gap-1.5 whitespace-nowrap shrink-0"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            Share
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShareOpen(true)}
+              className="gap-1.5 whitespace-nowrap shrink-0"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+              Share
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"

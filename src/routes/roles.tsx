@@ -1,8 +1,20 @@
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { CalendarClock, Check, Minus, ShieldCheck, Trash2, UserPlus } from "lucide-react";
+import {
+  CalendarClock,
+  Check,
+  Eye,
+  Loader2,
+  Lock,
+  Pencil,
+  RotateCcw,
+  Save,
+  ShieldCheck,
+  Trash2,
+  UserPlus,
+} from "lucide-react";
 import { toast } from "sonner";
-import { AppShell, Initials, NoAccess, PageHeader, roleLabel } from "@/components/app-shell";
+import { AppShell, Initials, PageHeader, roleLabel } from "@/components/app-shell";
 import {
   CreateUserForm,
   EditUserPolicyDialog,
@@ -12,6 +24,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -42,6 +55,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DEFAULT_ADMIN_MODULE_PERMISSIONS,
+  DEFAULT_MEMBER_MODULE_PERMISSIONS,
+  PORTAL_MODULES,
+  resolveEffectivePermissions,
+  toggleModulePermissionField,
+  type ModuleKey,
+  type ModulePermission,
+  type ModulePermissionsMap,
+} from "@/lib/permissions";
+import { getClientSessionToken } from "@/lib/portal-session-client";
 import { PASSWORD_POLICY_ERROR, isStrongPassword } from "@/lib/security";
 import { useApp, type Perm } from "@/lib/store";
 import type { Role, User } from "@/lib/types";
@@ -69,8 +93,6 @@ export const Route = createFileRoute("/roles")({
     </AppShell>
   ),
 });
-
-const ROLES: Role[] = ["super_admin", "admin", "member"];
 
 const ADMIN_CONTROLS: { perm: Perm; label: string; description: string }[] = [
   {
@@ -111,80 +133,65 @@ const ADMIN_CONTROLS: { perm: Perm; label: string; description: string }[] = [
   { perm: "system_settings", label: "Portal settings", description: "Portal-wide configuration" },
 ];
 
-const MATRIX: { label: string; description: string; allowed: Role[] }[] = [
-  {
-    label: "Create team accounts with email & password",
-    description: "Super Admin sets the role for every account",
-    allowed: ["super_admin"],
-  },
-  {
-    label: "Manage admins & role changes",
-    description: "Promote or demote admins",
-    allowed: ["super_admin"],
-  },
-  {
-    label: "Decide what Admins can see",
-    description: "Toggle admin capabilities on and off",
-    allowed: ["super_admin"],
-  },
-  {
-    label: "Set own tasks",
-    description: "Everyone plans their own today / weekly / monthly / quarterly tasks",
-    allowed: ["super_admin", "admin", "member"],
-  },
-  {
-    label: "Submit EOD report at log out",
-    description: "What was worked on, completed and blockers",
-    allowed: ["super_admin", "admin", "member"],
-  },
-  { label: "View audit logs", description: "Full activity trail", allowed: ["super_admin"] },
-  {
-    label: "Punch in / out & submit proof",
-    description: "Daily attendance and work proof",
-    allowed: ["super_admin", "admin", "member"],
-  },
-  {
-    label: "Ask Addy assistant",
-    description: "In-portal help on how everything works",
-    allowed: ["super_admin", "admin", "member"],
-  },
-  {
-    label: "Apply for leave",
-    description: "Casual and sick leave requests",
-    allowed: ["super_admin", "admin", "member"],
-  },
-  {
-    label: "Messages & tickets",
-    description: "Chat and raise support requests",
-    allowed: ["super_admin", "admin", "member"],
-  },
-];
+interface WorkspaceUserOption {
+  id: string;
+  fullName: string;
+  email: string;
+  role: "admin" | "member";
+  designation: string;
+  department: string;
+  active: boolean;
+}
+
+interface PermissionsApiPayload {
+  ok: boolean;
+  error?: string;
+  rolePermissions?: {
+    admin: ModulePermissionsMap;
+    member: ModulePermissionsMap;
+  };
+  userOverrides?: Record<string, Partial<Record<ModuleKey, ModulePermission>>>;
+  users?: WorkspaceUserOption[];
+  myPermissions?: ModulePermissionsMap;
+}
 
 function RolesPage() {
   const { me } = useApp();
   if (!me) return null;
-  if (me.role !== "super_admin") return <NoAccess />;
+
+  if (me.role !== "super_admin") {
+    return (
+      <>
+        <PageHeader
+          title="Roles & Permissions"
+          description="View role permissions across Workpulse modules. Only Super Admin can modify these permissions."
+        />
+        <ModuleAccessMatrix />
+      </>
+    );
+  }
+
   return (
     <>
       <PageHeader
         title="Roles & Permissions"
-        description="Create every team account and decide exactly what Admins can see."
+        description="Create team accounts and configure the Module Access Control Matrix for Admin and Team Member roles."
       />
-      <Tabs defaultValue="accounts" className="space-y-6">
+      <Tabs defaultValue="matrix" className="space-y-6">
         <TabsList>
+          <TabsTrigger value="matrix">Module Access Matrix</TabsTrigger>
           <TabsTrigger value="accounts">Team accounts</TabsTrigger>
           <TabsTrigger value="admin">Admin visibility</TabsTrigger>
-          <TabsTrigger value="matrix">Capability matrix</TabsTrigger>
         </TabsList>
+        <TabsContent value="matrix">
+          <ModuleAccessMatrix />
+        </TabsContent>
         <TabsContent value="accounts" className="space-y-6">
           <CreateAccount />
           <AccountList />
         </TabsContent>
         <TabsContent value="admin">
           <AdminVisibility />
-        </TabsContent>
-        <TabsContent value="matrix">
-          <CapabilityMatrix />
         </TabsContent>
       </Tabs>
     </>
@@ -476,44 +483,552 @@ function AdminVisibility() {
   );
 }
 
-function CapabilityMatrix() {
+function ReadOnlyAccessBadges({ perm }: { perm: ModulePermission }) {
+  if (!perm.view) {
+    return (
+      <span className="inline-flex items-center rounded-md border border-border bg-muted/60 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+        No Access
+      </span>
+    );
+  }
+  if (perm.edit) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-semibold text-[#5B00A3]">
+        <Check className="h-3 w-3" />
+        View + Edit
+      </span>
+    );
+  }
   return (
-    <Card className="rounded-2xl">
+    <span className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-800">
+      <Eye className="h-3 w-3" />
+      View Only
+    </span>
+  );
+}
+
+function ModuleAccessMatrix() {
+  const { me, refreshPermissions } = useApp();
+  const isSuperAdmin = me?.role === "super_admin";
+
+  const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [dirty, setDirty] = React.useState(false);
+  const [scope, setScope] = React.useState<string>("role");
+  const [users, setUsers] = React.useState<WorkspaceUserOption[]>([]);
+
+  const [savedRolePerms, setSavedRolePerms] = React.useState<{
+    admin: ModulePermissionsMap;
+    member: ModulePermissionsMap;
+  }>({
+    admin: DEFAULT_ADMIN_MODULE_PERMISSIONS,
+    member: DEFAULT_MEMBER_MODULE_PERMISSIONS,
+  });
+
+  const [draftRolePerms, setDraftRolePerms] = React.useState<{
+    admin: ModulePermissionsMap;
+    member: ModulePermissionsMap;
+  }>({
+    admin: DEFAULT_ADMIN_MODULE_PERMISSIONS,
+    member: DEFAULT_MEMBER_MODULE_PERMISSIONS,
+  });
+
+  const [userOverrides, setUserOverrides] = React.useState<
+    Record<string, Partial<Record<ModuleKey, ModulePermission>>>
+  >({});
+
+  const [draftUserPerms, setDraftUserPerms] = React.useState<ModulePermissionsMap>(
+    DEFAULT_MEMBER_MODULE_PERMISSIONS,
+  );
+
+  const hydrateFromPayload = React.useCallback((payload: PermissionsApiPayload) => {
+    const nextAdmin = resolveEffectivePermissions("admin", payload.rolePermissions?.admin, null);
+    const nextMember = resolveEffectivePermissions("member", payload.rolePermissions?.member, null);
+    const nextRolePerms = { admin: nextAdmin, member: nextMember };
+    setSavedRolePerms(nextRolePerms);
+    setDraftRolePerms(nextRolePerms);
+    setUserOverrides(payload.userOverrides ?? {});
+    setUsers(payload.users ?? []);
+    setDirty(false);
+  }, []);
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const token = getClientSessionToken();
+        const response = await fetch("/api/permissions", {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            ...(token ? { "x-sace-session": token } : {}),
+          },
+        });
+        const payload = (await response.json()) as PermissionsApiPayload;
+        if (!alive) return;
+        if (!response.ok || !payload.ok) {
+          toast.error(payload.error ?? "Unable to load module permissions.");
+        } else {
+          hydrateFromPayload(payload);
+        }
+      } catch {
+        if (alive) {
+          toast.error("Unable to load module permissions right now.");
+        }
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [hydrateFromPayload]);
+
+  const selectedUser = React.useMemo(
+    () => (scope === "role" ? null : (users.find((u) => u.id === scope) ?? null)),
+    [scope, users],
+  );
+
+  const selectedUserHasOverrides = Boolean(
+    selectedUser &&
+    userOverrides[selectedUser.id] &&
+    Object.keys(userOverrides[selectedUser.id] ?? {}).length > 0,
+  );
+
+  const handleScopeChange = (nextScope: string) => {
+    setScope(nextScope);
+    setDirty(false);
+    if (nextScope === "role") {
+      setDraftRolePerms({
+        admin: { ...savedRolePerms.admin },
+        member: { ...savedRolePerms.member },
+      });
+      return;
+    }
+    const target = users.find((u) => u.id === nextScope);
+    if (target) {
+      const roleBase = savedRolePerms[target.role];
+      const existingOverrides = userOverrides[target.id] ?? null;
+      setDraftUserPerms(resolveEffectivePermissions(target.role, roleBase, existingOverrides));
+    }
+  };
+
+  const handleToggleRolePerm = (
+    roleKey: "admin" | "member",
+    moduleKey: ModuleKey,
+    field: "view" | "edit",
+    checked: boolean,
+  ) => {
+    if (!isSuperAdmin) return;
+    setDraftRolePerms((prev) => ({
+      ...prev,
+      [roleKey]: {
+        ...prev[roleKey],
+        [moduleKey]: toggleModulePermissionField(prev[roleKey][moduleKey], field, checked),
+      },
+    }));
+    setDirty(true);
+  };
+
+  const handleToggleUserPerm = (moduleKey: ModuleKey, field: "view" | "edit", checked: boolean) => {
+    if (!isSuperAdmin || !selectedUser) return;
+    setDraftUserPerms((prev) => ({
+      ...prev,
+      [moduleKey]: toggleModulePermissionField(prev[moduleKey], field, checked),
+    }));
+    setDirty(true);
+  };
+
+  const handleSave = async () => {
+    if (!isSuperAdmin || saving) return;
+    setSaving(true);
+    try {
+      const token = getClientSessionToken();
+      const body =
+        scope === "role"
+          ? {
+              scope: "role" as const,
+              rolePermissions: draftRolePerms,
+            }
+          : {
+              scope: "user" as const,
+              userId: scope,
+              permissions: draftUserPerms,
+            };
+
+      const response = await fetch("/api/permissions", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "x-sace-session": token } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      const payload = (await response.json()) as PermissionsApiPayload;
+      if (!response.ok || !payload.ok) {
+        toast.error(payload.error ?? "Failed to save module permissions.");
+        return;
+      }
+
+      hydrateFromPayload(payload);
+      if (scope !== "role") {
+        const target = (payload.users ?? users).find((u) => u.id === scope);
+        if (target && payload.rolePermissions) {
+          setDraftUserPerms(
+            resolveEffectivePermissions(
+              target.role,
+              payload.rolePermissions[target.role],
+              payload.userOverrides?.[target.id] ?? null,
+            ),
+          );
+        }
+      }
+      await refreshPermissions();
+      toast.success(
+        selectedUser
+          ? `Saved custom permissions for ${selectedUser.fullName}`
+          : "Role permissions saved across SACE Workpulse",
+      );
+    } catch {
+      toast.error("Unable to save permissions. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleResetUserToDefault = async () => {
+    if (!isSuperAdmin || !selectedUser || saving) return;
+    setSaving(true);
+    try {
+      const token = getClientSessionToken();
+      const response = await fetch("/api/permissions", {
+        method: "PUT",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "x-sace-session": token } : {}),
+        },
+        body: JSON.stringify({
+          scope: "user",
+          userId: selectedUser.id,
+          resetToDefault: true,
+        }),
+      });
+      const payload = (await response.json()) as PermissionsApiPayload;
+      if (!response.ok || !payload.ok) {
+        toast.error(payload.error ?? "Could not reset user permissions.");
+        return;
+      }
+
+      hydrateFromPayload(payload);
+      if (payload.rolePermissions) {
+        setDraftUserPerms(payload.rolePermissions[selectedUser.role]);
+      }
+      await refreshPermissions();
+      toast.success(
+        `${selectedUser.fullName} restored to ${roleLabel(selectedUser.role)} defaults`,
+      );
+    } catch {
+      toast.error("Unable to reset permissions right now.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card className="rounded-2xl border border-border bg-white shadow-xs">
+      <CardHeader className="border-b border-border/70 pb-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2 text-lg font-semibold text-foreground">
+              <ShieldCheck className="h-5 w-5 text-[#5B00A3]" />
+              Module Access Control Matrix
+            </CardTitle>
+            <CardDescription>
+              Configure View and Edit permissions for all 15 Workpulse modules. Checking Edit
+              automatically enables View; unchecking View revokes both.
+            </CardDescription>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            {isSuperAdmin && (
+              <div className="flex items-center gap-2">
+                <Select value={scope} onValueChange={handleScopeChange}>
+                  <SelectTrigger className="w-[260px] bg-white border-border">
+                    <SelectValue placeholder="Scope: Default Role Permissions" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="role">Scope: Default Role Permissions</SelectItem>
+                    {users.map((u) => {
+                      const hasOverride = Boolean(
+                        userOverrides[u.id] && Object.keys(userOverrides[u.id] ?? {}).length > 0,
+                      );
+                      return (
+                        <SelectItem key={u.id} value={u.id}>
+                          {u.fullName} ({roleLabel(u.role)}){hasOverride ? " • Custom" : ""}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {isSuperAdmin && selectedUser && selectedUserHasOverrides && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleResetUserToDefault()}
+                disabled={saving}
+                className="gap-1.5 border-border"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset to Role Default
+              </Button>
+            )}
+
+            {isSuperAdmin && (
+              <Button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={saving || loading}
+                className="gap-1.5 bg-[#5B00A3] hover:bg-[#490085] text-white shadow-xs"
+              >
+                {saving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                {saving ? "Saving…" : dirty ? "Save Permissions*" : "Save Permissions"}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {selectedUser && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-purple-200 bg-purple-50/70 px-3.5 py-2 text-xs text-[#5B00A3]">
+            <span>
+              Editing per-user overrides for{" "}
+              <strong className="font-semibold">{selectedUser.fullName}</strong> (
+              {roleLabel(selectedUser.role)}). Changes apply only to this user.
+            </span>
+            {selectedUserHasOverrides ? (
+              <Badge className="bg-[#5B00A3] text-white hover:bg-[#5B00A3]">
+                Custom Override Active
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-purple-300 text-[#5B00A3]">
+                Using {roleLabel(selectedUser.role)} Default
+              </Badge>
+            )}
+          </div>
+        )}
+
+        {!isSuperAdmin && (
+          <div className="mt-3 flex items-center gap-2 rounded-xl border border-border bg-muted/40 px-3.5 py-2 text-xs text-muted-foreground">
+            <Lock className="h-3.5 w-3.5 text-[#5B00A3]" />
+            <span>
+              Read-only view: Only a Super Admin can modify role permissions or user overrides.
+            </span>
+          </div>
+        )}
+      </CardHeader>
+
       <CardContent className="overflow-x-auto p-0">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
-            <tr>
-              <th className="px-5 py-3">Capability</th>
-              {ROLES.map((r) => (
-                <th key={r} className="px-5 py-3 text-center">
-                  {roleLabel(r)}
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin text-[#5B00A3]" />
+            Loading module permissions…
+          </div>
+        ) : (
+          <table className="w-full min-w-[760px] text-sm">
+            <thead className="bg-muted/50 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-5 py-3.5 w-[42%]">Module / Capability</th>
+                <th className="px-4 py-3.5 text-center w-[18%]">Super Admin</th>
+                <th className="px-4 py-3.5 text-center w-[20%]">
+                  Admin
+                  {selectedUser?.role === "admin" && (
+                    <span className="ml-1.5 rounded bg-[#5B00A3]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#5B00A3] normal-case">
+                      {selectedUser.fullName.split(" ")[0]}
+                    </span>
+                  )}
                 </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {MATRIX.map((row) => (
-              <tr key={row.label} className="border-t border-border">
-                <td className="px-5 py-3">
-                  <p className="font-medium">{row.label}</p>
-                  <p className="text-xs text-muted-foreground">{row.description}</p>
-                </td>
-                {ROLES.map((r) => (
-                  <td key={r} className="px-5 py-3 text-center">
-                    {row.allowed.includes(r) ? (
-                      <Check className="mx-auto h-4 w-4 text-success" aria-label="Allowed" />
-                    ) : (
-                      <Minus
-                        className="mx-auto h-4 w-4 text-muted-foreground"
-                        aria-label="Not allowed"
-                      />
-                    )}
-                  </td>
-                ))}
+                <th className="px-4 py-3.5 text-center w-[20%]">
+                  Team Member
+                  {selectedUser?.role === "member" && (
+                    <span className="ml-1.5 rounded bg-[#5B00A3]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#5B00A3] normal-case">
+                      {selectedUser.fullName.split(" ")[0]}
+                    </span>
+                  )}
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {PORTAL_MODULES.map((mod) => {
+                const adminPerm =
+                  selectedUser?.role === "admin"
+                    ? draftUserPerms[mod.key]
+                    : draftRolePerms.admin[mod.key];
+                const memberPerm =
+                  selectedUser?.role === "member"
+                    ? draftUserPerms[mod.key]
+                    : draftRolePerms.member[mod.key];
+
+                const adminMatchesRoleDefault =
+                  selectedUser?.role === "admin" &&
+                  adminPerm.view === savedRolePerms.admin[mod.key].view &&
+                  adminPerm.edit === savedRolePerms.admin[mod.key].edit;
+                const memberMatchesRoleDefault =
+                  selectedUser?.role === "member" &&
+                  memberPerm.view === savedRolePerms.member[mod.key].view &&
+                  memberPerm.edit === savedRolePerms.member[mod.key].edit;
+
+                const isCustomOverride =
+                  (selectedUser?.role === "admin" && !adminMatchesRoleDefault) ||
+                  (selectedUser?.role === "member" && !memberMatchesRoleDefault);
+
+                const adminColumnEditable =
+                  isSuperAdmin && (!selectedUser || selectedUser.role === "admin");
+                const memberColumnEditable =
+                  isSuperAdmin && (!selectedUser || selectedUser.role === "member");
+
+                return (
+                  <tr
+                    key={mod.key}
+                    className="border-t border-border/80 transition-colors hover:bg-muted/20"
+                  >
+                    <td className="px-5 py-3.5 align-top">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium text-foreground">{mod.label}</p>
+                        {isCustomOverride && (
+                          <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-semibold text-[#5B00A3]">
+                            Overridden
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">{mod.description}</p>
+                    </td>
+
+                    {/* SUPER ADMIN LOCKED COLUMN */}
+                    <td className="px-4 py-3.5 text-center align-middle">
+                      <span
+                        className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-2.5 py-1 text-[11px] font-semibold text-[#5B00A3]"
+                        title="Super Admin always retains full View + Edit access"
+                      >
+                        <Lock className="h-3 w-3" />
+                        View + Edit
+                      </span>
+                    </td>
+
+                    {/* ADMIN COLUMN */}
+                    <td className="px-4 py-3.5 text-center align-middle">
+                      {!isSuperAdmin ? (
+                        <ReadOnlyAccessBadges perm={adminPerm} />
+                      ) : !adminColumnEditable ? (
+                        <span className="text-xs text-muted-foreground/70">Role default</span>
+                      ) : (
+                        <div className="inline-flex items-center justify-center gap-4">
+                          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs font-medium text-foreground">
+                            <Checkbox
+                              checked={adminPerm.view}
+                              onCheckedChange={(checked) => {
+                                const val = checked === true;
+                                if (selectedUser?.role === "admin") {
+                                  handleToggleUserPerm(mod.key, "view", val);
+                                } else {
+                                  handleToggleRolePerm("admin", mod.key, "view", val);
+                                }
+                              }}
+                              aria-label={`${mod.label} Admin View`}
+                              className="border-[#5B00A3] data-[state=checked]:bg-[#5B00A3] data-[state=checked]:border-[#5B00A3] data-[state=checked]:text-white"
+                            />
+                            <span className="inline-flex items-center gap-1">
+                              <Eye className="h-3 w-3 text-muted-foreground" />
+                              View
+                            </span>
+                          </label>
+                          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs font-medium text-foreground">
+                            <Checkbox
+                              checked={adminPerm.edit}
+                              onCheckedChange={(checked) => {
+                                const val = checked === true;
+                                if (selectedUser?.role === "admin") {
+                                  handleToggleUserPerm(mod.key, "edit", val);
+                                } else {
+                                  handleToggleRolePerm("admin", mod.key, "edit", val);
+                                }
+                              }}
+                              aria-label={`${mod.label} Admin Edit`}
+                              className="border-[#5B00A3] data-[state=checked]:bg-[#5B00A3] data-[state=checked]:border-[#5B00A3] data-[state=checked]:text-white"
+                            />
+                            <span className="inline-flex items-center gap-1">
+                              <Pencil className="h-3 w-3 text-muted-foreground" />
+                              Edit
+                            </span>
+                          </label>
+                        </div>
+                      )}
+                    </td>
+
+                    {/* TEAM MEMBER COLUMN */}
+                    <td className="px-4 py-3.5 text-center align-middle">
+                      {!isSuperAdmin ? (
+                        <ReadOnlyAccessBadges perm={memberPerm} />
+                      ) : !memberColumnEditable ? (
+                        <span className="text-xs text-muted-foreground/70">Role default</span>
+                      ) : (
+                        <div className="inline-flex items-center justify-center gap-4">
+                          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs font-medium text-foreground">
+                            <Checkbox
+                              checked={memberPerm.view}
+                              onCheckedChange={(checked) => {
+                                const val = checked === true;
+                                if (selectedUser?.role === "member") {
+                                  handleToggleUserPerm(mod.key, "view", val);
+                                } else {
+                                  handleToggleRolePerm("member", mod.key, "view", val);
+                                }
+                              }}
+                              aria-label={`${mod.label} Team Member View`}
+                              className="border-[#5B00A3] data-[state=checked]:bg-[#5B00A3] data-[state=checked]:border-[#5B00A3] data-[state=checked]:text-white"
+                            />
+                            <span className="inline-flex items-center gap-1">
+                              <Eye className="h-3 w-3 text-muted-foreground" />
+                              View
+                            </span>
+                          </label>
+                          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-xs font-medium text-foreground">
+                            <Checkbox
+                              checked={memberPerm.edit}
+                              onCheckedChange={(checked) => {
+                                const val = checked === true;
+                                if (selectedUser?.role === "member") {
+                                  handleToggleUserPerm(mod.key, "edit", val);
+                                } else {
+                                  handleToggleRolePerm("member", mod.key, "edit", val);
+                                }
+                              }}
+                              aria-label={`${mod.label} Team Member Edit`}
+                              className="border-[#5B00A3] data-[state=checked]:bg-[#5B00A3] data-[state=checked]:border-[#5B00A3] data-[state=checked]:text-white"
+                            />
+                            <span className="inline-flex items-center gap-1">
+                              <Pencil className="h-3 w-3 text-muted-foreground" />
+                              Edit
+                            </span>
+                          </label>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </CardContent>
     </Card>
   );

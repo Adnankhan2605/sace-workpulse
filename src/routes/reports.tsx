@@ -233,14 +233,14 @@ function calculateMonthlyPerformance(
 }
 
 function ReportsPage() {
-  const { state, can, visibleUsers } = useApp();
+  const { state, can, canViewModule, visibleUsers } = useApp();
   const [activeTab, setActiveTab] = React.useState<"monthly" | "workforce">("monthly");
   const [selectedMonthKey, setSelectedMonthKey] = React.useState<string>("2026-08");
   const [range, setRange] = React.useState("30");
   const [scorecardUser, setScorecardUser] = React.useState<MonthlyEmployeePerf | null>(null);
   const [printModalOpen, setPrintModalOpen] = React.useState(false);
 
-  const hasAccess = can("view_reports");
+  const hasAccess = canViewModule("eod");
 
   const people = React.useMemo(() => visibleUsers().filter((u) => u.active), [visibleUsers]);
   const [yearStr = "2026", mStr = "08"] = selectedMonthKey.split("-");

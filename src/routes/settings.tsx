@@ -69,7 +69,8 @@ async function toAvatarDataUrl(file: File): Promise<string> {
 }
 
 function SettingsPage() {
-  const { state, me, can, saveUser, saveOfficeGeofence, log } = useApp();
+  const { state, me, can, canEditModule, saveUser, saveOfficeGeofence, log } = useApp();
+  const canEditSettings = canEditModule("settings_integrations");
   const isAdmin = me?.role === "super_admin" || me?.role === "admin" || can("system_settings");
   const currentGeofence = state.officeGeofence ?? DEFAULT_OFFICE_GEOFENCE;
 
@@ -175,6 +176,7 @@ function SettingsPage() {
   }
 
   function handleAddOffice() {
+    if (!canEditSettings) return;
     const newId = `office-${Date.now().toString(36)}`;
     const primary = offices[0] ?? DEFAULT_OFFICE_GEOFENCE;
     setOffices((prev) => [
@@ -191,6 +193,7 @@ function SettingsPage() {
   }
 
   function handleRemoveOffice(officeId: string) {
+    if (!canEditSettings) return;
     if (offices.length <= 1) {
       toast.error("At least one office location is required.");
       return;
@@ -199,6 +202,7 @@ function SettingsPage() {
   }
 
   async function detectCurrentOfficeGps(officeId: string) {
+    if (!canEditSettings) return;
     setDetectingOfficeId(officeId);
     try {
       const coords = await requestCurrentPosition();
@@ -219,8 +223,8 @@ function SettingsPage() {
 
   async function handleSaveGeofence(e: React.FormEvent) {
     e.preventDefault();
-    if (!isAdmin) {
-      toast.error("Admin access required to update office geofencing.");
+    if (!isAdmin || !canEditSettings) {
+      toast.error("Edit permission is required to update office geofencing.");
       return;
     }
 
@@ -286,7 +290,7 @@ function SettingsPage() {
   }
 
   async function pickAvatar(file: File | undefined) {
-    if (!file || !me) return;
+    if (!file || !me || !canEditSettings) return;
     setBusy(true);
     try {
       const avatarUrl = await toAvatarDataUrl(file);
@@ -318,30 +322,32 @@ function SettingsPage() {
                 {roleLabel(me.role)} · @{me.username}
               </p>
             </div>
-            <div className="ml-auto">
-              <input
-                ref={fileRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                className="hidden"
-                onChange={(e) => void pickAvatar(e.target.files?.[0])}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={busy}
-                onClick={() => fileRef.current?.click()}
-              >
-                <ImagePlus className="mr-1 h-4 w-4" /> Change photo
-              </Button>
-            </div>
+            {canEditSettings && (
+              <div className="ml-auto">
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  onChange={(e) => void pickAvatar(e.target.files?.[0])}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => fileRef.current?.click()}
+                >
+                  <ImagePlus className="mr-1 h-4 w-4" /> Change photo
+                </Button>
+              </div>
+            )}
           </div>
           <form
             className="space-y-4"
             onSubmit={async (e) => {
               e.preventDefault();
-              if (!me) return;
+              if (!me || !canEditSettings) return;
               setBusy(true);
               const res = await saveUser({
                 userId: me.id,
@@ -365,6 +371,7 @@ function SettingsPage() {
                 id="name"
                 value={fullName || ""}
                 onChange={(e) => setFullName(e.target.value)}
+                disabled={busy || !canEditSettings}
                 required
               />
             </div>
@@ -375,6 +382,7 @@ function SettingsPage() {
                 type="email"
                 value={email || ""}
                 onChange={(e) => setEmail(e.target.value)}
+                disabled={busy || !canEditSettings}
                 required
               />
             </div>
@@ -384,6 +392,7 @@ function SettingsPage() {
                 id="designation"
                 value={designation || ""}
                 onChange={(e) => setDesignation(e.target.value)}
+                disabled={busy || !canEditSettings}
               />
             </div>
             <div className="space-y-2">
@@ -392,12 +401,15 @@ function SettingsPage() {
                 id="vision"
                 value={vision || ""}
                 onChange={(e) => setVision(e.target.value)}
+                disabled={busy || !canEditSettings}
                 rows={3}
               />
             </div>
-            <Button type="submit" disabled={busy}>
-              Save profile
-            </Button>
+            {canEditSettings && (
+              <Button type="submit" disabled={busy}>
+                Save profile
+              </Button>
+            )}
           </form>
         </CardContent>
       </Card>
@@ -410,7 +422,7 @@ function SettingsPage() {
               className="space-y-4"
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!me) return;
+                if (!me || !canEditSettings) return;
                 if (!isStrongPassword(password)) {
                   toast.error(PASSWORD_POLICY_ERROR);
                   return;
@@ -435,11 +447,14 @@ function SettingsPage() {
                   value={password || ""}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••"
+                  disabled={busy || !canEditSettings}
                 />
               </div>
-              <Button type="submit" variant="outline" disabled={busy}>
-                Update password
-              </Button>
+              {canEditSettings && (
+                <Button type="submit" variant="outline" disabled={busy}>
+                  Update password
+                </Button>
+              )}
             </form>
           </CardContent>
         </Card>
@@ -573,7 +588,12 @@ function SettingsPage() {
             <Label htmlFor="geofence-toggle" className="text-xs text-muted-foreground">
               {geoEnabled ? "Active" : "Disabled"}
             </Label>
-            <Switch id="geofence-toggle" checked={geoEnabled} onCheckedChange={setGeoEnabled} />
+            <Switch
+              id="geofence-toggle"
+              checked={geoEnabled}
+              onCheckedChange={setGeoEnabled}
+              disabled={!canEditSettings || geoBusy}
+            />
           </div>
         </div>
 
@@ -603,6 +623,7 @@ function SettingsPage() {
                   value={shiftStartTime}
                   onChange={(e) => setShiftStartTime(e.target.value)}
                   className="h-9 font-mono tabular-nums"
+                  disabled={!canEditSettings || geoBusy}
                   required
                 />
               </div>
@@ -616,6 +637,7 @@ function SettingsPage() {
                   value={shiftEndTime}
                   onChange={(e) => setShiftEndTime(e.target.value)}
                   className="h-9 font-mono tabular-nums"
+                  disabled={!canEditSettings || geoBusy}
                   required
                 />
               </div>
@@ -636,6 +658,7 @@ function SettingsPage() {
                 id="late-carryover-toggle"
                 checked={lateCarryoverEnabled}
                 onCheckedChange={setLateCarryoverEnabled}
+                disabled={!canEditSettings || geoBusy}
               />
             </div>
           </div>
@@ -651,15 +674,17 @@ function SettingsPage() {
                   Employees can punch in from inside any enabled office boundary below.
                 </p>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={handleAddOffice}
-                className="h-8 gap-1 text-xs"
-              >
-                <Plus className="h-3.5 w-3.5" /> Add Office
-              </Button>
+              {canEditSettings && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAddOffice}
+                  className="h-8 gap-1 text-xs"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add Office
+                </Button>
+              )}
             </div>
 
             <div className="space-y-3">
@@ -677,10 +702,11 @@ function SettingsPage() {
                         <Switch
                           checked={office.enabled}
                           onCheckedChange={(v) => updateOfficeField(office.id, "enabled", v)}
+                          disabled={!canEditSettings || geoBusy}
                         />
                         <span>{office.enabled ? "Enabled" : "Paused"}</span>
                       </label>
-                      {offices.length > 1 && (
+                      {canEditSettings && offices.length > 1 && (
                         <Button
                           type="button"
                           variant="ghost"
@@ -704,6 +730,7 @@ function SettingsPage() {
                       value={office.name}
                       onChange={(e) => updateOfficeField(office.id, "name", e.target.value)}
                       placeholder="e.g. SACE Group Headquarters"
+                      disabled={!canEditSettings || geoBusy}
                       required
                     />
                   </div>
@@ -724,6 +751,7 @@ function SettingsPage() {
                         onChange={(e) =>
                           updateOfficeField(office.id, "latitude", Number(e.target.value))
                         }
+                        disabled={!canEditSettings || geoBusy}
                         required
                       />
                     </div>
@@ -742,6 +770,7 @@ function SettingsPage() {
                         onChange={(e) =>
                           updateOfficeField(office.id, "longitude", Number(e.target.value))
                         }
+                        disabled={!canEditSettings || geoBusy}
                         required
                       />
                     </div>
@@ -757,9 +786,10 @@ function SettingsPage() {
                           <button
                             key={preset}
                             type="button"
+                            disabled={!canEditSettings || geoBusy}
                             onClick={() => updateOfficeField(office.id, "radiusMeters", preset)}
                             className={cn(
-                              "rounded-md border px-2 py-0.5 text-[11px] font-medium tabular-nums transition-colors cursor-pointer",
+                              "rounded-md border px-2 py-0.5 text-[11px] font-medium tabular-nums transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
                               Number(office.radiusMeters) === preset
                                 ? "border-primary bg-primary/15 text-primary"
                                 : "border-border bg-muted/40 text-muted-foreground hover:text-foreground",
@@ -782,23 +812,26 @@ function SettingsPage() {
                         onChange={(e) =>
                           updateOfficeField(office.id, "radiusMeters", Number(e.target.value))
                         }
+                        disabled={!canEditSettings || geoBusy}
                         required
                       />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        disabled={detectingOfficeId === office.id || geoBusy}
-                        onClick={() => void detectCurrentOfficeGps(office.id)}
-                        className="h-9 gap-1.5 shrink-0"
-                      >
-                        {detectingOfficeId === office.id ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Navigation className="h-3.5 w-3.5" />
-                        )}
-                        {detectingOfficeId === office.id ? "Locating..." : "Use Current GPS"}
-                      </Button>
+                      {canEditSettings && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={detectingOfficeId === office.id || geoBusy}
+                          onClick={() => void detectCurrentOfficeGps(office.id)}
+                          className="h-9 gap-1.5 shrink-0"
+                        >
+                          {detectingOfficeId === office.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Navigation className="h-3.5 w-3.5" />
+                          )}
+                          {detectingOfficeId === office.id ? "Locating..." : "Use Current GPS"}
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -815,18 +848,20 @@ function SettingsPage() {
               <span />
             )}
 
-            <Button
-              type="submit"
-              disabled={geoBusy || Boolean(detectingOfficeId)}
-              className="gap-1.5"
-            >
-              {geoBusy ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <ShieldCheck className="h-3.5 w-3.5" />
-              )}
-              {geoBusy ? "Saving..." : "Save Location & Shift Settings"}
-            </Button>
+            {canEditSettings && (
+              <Button
+                type="submit"
+                disabled={geoBusy || Boolean(detectingOfficeId)}
+                className="gap-1.5"
+              >
+                {geoBusy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                )}
+                {geoBusy ? "Saving..." : "Save Location & Shift Settings"}
+              </Button>
+            )}
           </div>
         </form>
       </CardContent>

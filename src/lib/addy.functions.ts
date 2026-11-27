@@ -30,6 +30,9 @@ export const askAddy = createServerFn({ method: "POST" })
   .middleware([requirePortalAuth])
   .inputValidator((data: unknown) => AskSchema.parse(data))
   .handler(async ({ data, context }) => {
+    const { assertModuleAccess } = await import("./permissions.server.ts");
+    await assertModuleAccess(context.userId, context.role, "addy_ai", "edit");
+
     const { assertRateLimit } = await import("./rate-limit.server.ts");
     assertRateLimit(`addy:${context.userId}`, {
       limit: 20,

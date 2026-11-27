@@ -90,7 +90,8 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 function DashboardPage() {
-  const { me, saveUser } = useApp();
+  const { me, saveUser, canEditModule } = useApp();
+  const canEditDashboard = canEditModule("dashboard");
   const isAdmin = me && me.role !== "member";
   const [adminTab, setAdminTab] = React.useState<"team" | "my">("team");
 
@@ -101,37 +102,46 @@ function DashboardPage() {
 
   // Sync state when me.dailyVision changes
   React.useEffect(() => {
-    if (me?.dailyVision) {
-      setDailyVision(me.dailyVision);
-    }
+    setDailyVision(me?.dailyVision ?? "");
   }, [me?.dailyVision]);
 
-  // Automatically prompt if user hasn't set vision yet and hasn't dismissed in current session
+  // Automatically prompt once after login unless dismissed/updated in current session
   React.useEffect(() => {
-    if (me && !hasCheckedAutoOpen.current) {
+    if (me && canEditDashboard && !hasCheckedAutoOpen.current) {
       hasCheckedAutoOpen.current = true;
       const dismissed =
-        typeof window !== "undefined" ? sessionStorage.getItem("sace_vision_dismissed") : null;
-      if (!me.dailyVision && !dismissed) {
+        typeof window !== "undefined"
+          ? sessionStorage.getItem(`sace_vision_dismissed_${me.id}`) ||
+            sessionStorage.getItem("sace_vision_dismissed")
+          : null;
+      if (!dismissed) {
         setIsModalOpen(true);
       }
     }
-  }, [me]);
+  }, [me, canEditDashboard]);
 
   const handleSubmitVision = async (text: string) => {
     const trimmed = text.trim();
+    if (!trimmed || !me) return;
+    const res = await saveUser({ userId: me.id, dailyVision: trimmed });
+    if (!res.ok) {
+      toast.error(res.error ?? "Could not save daily vision");
+      return;
+    }
     setDailyVision(trimmed);
     setIsModalOpen(false);
-    toast.success("Daily vision saved");
-    if (me) {
-      await saveUser({ userId: me.id, dailyVision: trimmed });
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem(`sace_vision_dismissed_${me.id}`, "true");
+      localStorage.removeItem(`sace_custom_vision_${me.id}`);
+      localStorage.removeItem(`sace_vision_date_${me.id}`);
     }
+    toast.success("Daily vision updated");
   };
 
   const handleCloseModal = () => {
     setIsModalOpen(false);
-    if (typeof window !== "undefined") {
-      sessionStorage.setItem("sace_vision_dismissed", "true");
+    if (typeof window !== "undefined" && me) {
+      sessionStorage.setItem(`sace_vision_dismissed_${me.id}`, "true");
     }
   };
 
@@ -188,6 +198,7 @@ interface VisionDialogProps {
 
 function VisionDialog({ isOpen, currentVision, onClose, onSubmit }: VisionDialogProps) {
   const [value, setValue] = React.useState(currentVision);
+  const [saving, setSaving] = React.useState(false);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -195,24 +206,30 @@ function VisionDialog({ isOpen, currentVision, onClose, onSubmit }: VisionDialog
     }
   }, [isOpen, currentVision]);
 
-  const handleSubmit = (e?: React.FormEvent) => {
+  const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const trimmed = value.trim();
-    if (!trimmed) return;
-    onSubmit(trimmed);
+    if (!trimmed || saving) return;
+    setSaving(true);
+    try {
+      await onSubmit(trimmed);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && !saving && onClose()}>
       <DialogContent className="rounded-2xl sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Set your Daily Vision</DialogTitle>
           <DialogDescription>
-            Before you start, write a short motivational line. It will appear on your dashboard
-            every day and can be edited anytime.
+            {currentVision.trim()
+              ? "Update your daily vision below, or click Skip for now to keep your existing vision."
+              : "Before you start, write a short motivational line. It will appear on your dashboard every day and can be edited anytime."}
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-4">
           <Textarea
             value={value}
             onChange={(e) => setValue(e.target.value)}
@@ -220,14 +237,15 @@ function VisionDialog({ isOpen, currentVision, onClose, onSubmit }: VisionDialog
             rows={3}
             className="resize-none"
             aria-label="Daily vision"
+            disabled={saving}
             autoFocus
           />
           <div className="flex items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>
               Skip for now
             </Button>
-            <Button type="submit" disabled={!value.trim()}>
-              Submit
+            <Button type="submit" disabled={!value.trim() || saving}>
+              {saving ? "Saving..." : currentVision.trim() ? "Update Vision" : "Save Vision"}
             </Button>
           </div>
         </form>
@@ -243,7 +261,11 @@ function MemberDashboard({
   dailyVision: string;
   onOpenVisionModal: () => void;
 }) {
-  const { state, me, punchInWithLocation } = useApp();
+  const { state, me, punchInWithLocation, canEditModule, canViewModule } = useApp();
+  const canEditAttendance = canEditModule("attendance");
+  const canViewTasks = canViewModule("tasks");
+  const canViewLeave = canViewModule("leave");
+  const canViewMessagesTickets = canViewModule("messages_tickets");
   const now = useClock();
   const today = new Date();
   const todayKey = dateKey(today);
@@ -445,7 +467,11 @@ function MemberDashboard({
             )}
 
             <div className="mt-4">
-              {!record?.punchIn ? (
+              {!canEditAttendance ? (
+                <Button className="w-full" variant="outline" disabled>
+                  Punch controls disabled (View-Only Attendance)
+                </Button>
+              ) : !record?.punchIn ? (
                 <Button className="w-full gap-2 shadow-xs" disabled={punchBusy} onClick={punchIn}>
                   {punchBusy ? (
                     <>
@@ -583,26 +609,34 @@ function MemberDashboard({
               <CardTitle className="text-base">Quick actions</CardTitle>
             </CardHeader>
             <CardContent className="grid grid-cols-2 gap-2">
-              <Button asChild variant="outline" size="sm">
-                <Link to="/tasks">
-                  <ClipboardList /> Tasks
-                </Link>
-              </Button>
-              <Button asChild variant="outline" size="sm">
-                <Link to="/leave">
-                  <Plane /> Leave
-                </Link>
-              </Button>
-              <Button asChild variant="outline" size="sm">
-                <Link to="/tickets">
-                  <LifeBuoy /> Ticket
-                </Link>
-              </Button>
-              <Button asChild variant="outline" size="sm">
-                <Link to="/messages">
-                  <MessageSquare /> Message
-                </Link>
-              </Button>
+              {canViewTasks && (
+                <Button asChild variant="outline" size="sm">
+                  <Link to="/tasks">
+                    <ClipboardList /> Tasks
+                  </Link>
+                </Button>
+              )}
+              {canViewLeave && (
+                <Button asChild variant="outline" size="sm">
+                  <Link to="/leave">
+                    <Plane /> Leave
+                  </Link>
+                </Button>
+              )}
+              {canViewMessagesTickets && (
+                <>
+                  <Button asChild variant="outline" size="sm">
+                    <Link to="/tickets">
+                      <LifeBuoy /> Ticket
+                    </Link>
+                  </Button>
+                  <Button asChild variant="outline" size="sm">
+                    <Link to="/messages">
+                      <MessageSquare /> Message
+                    </Link>
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -664,7 +698,23 @@ function AdminDashboard({
   dailyVision: string;
   onOpenVisionModal: () => void;
 }) {
-  const { state, me, can, visibleUsers, update, saveUser, notify, log } = useApp();
+  const {
+    state,
+    me,
+    can,
+    canViewModule,
+    canEditModule,
+    visibleUsers,
+    update,
+    saveUser,
+    notify,
+    log,
+  } = useApp();
+  const canViewUserManagement = canViewModule("user_management");
+  const canViewEod = canViewModule("eod");
+  const canViewLeave = canViewModule("leave");
+  const canEditLeave = canEditModule("leave");
+  const canViewAudit = canViewModule("audit");
   const today = new Date();
   const todayKey = dateKey(today);
   const team = visibleUsers().filter((u) => u.id !== me!.id);
@@ -750,15 +800,21 @@ function AdminDashboard({
         actions={
           <div className="flex flex-wrap items-center gap-2.5">
             <DualTimezoneClock variant="card" />
-            <Button asChild size="sm">
-              <Link to="/team">Create account</Link>
-            </Button>
-            <Button asChild size="sm" variant="outline">
-              <Link to="/eod">EOD reports</Link>
-            </Button>
-            <Button asChild size="sm" variant="outline">
-              <Link to="/reports">Generate report</Link>
-            </Button>
+            {canViewUserManagement && (
+              <Button asChild size="sm">
+                <Link to="/team">Create account</Link>
+              </Button>
+            )}
+            {canViewEod && (
+              <>
+                <Button asChild size="sm" variant="outline">
+                  <Link to="/eod">EOD reports</Link>
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <Link to="/reports">Generate report</Link>
+                </Button>
+              </>
+            )}
           </div>
         }
       />
@@ -822,9 +878,11 @@ function AdminDashboard({
         <Card className="rounded-2xl">
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="text-base">Pending leave</CardTitle>
-            <Link to="/leave" className="text-sm font-medium text-primary hover:underline">
-              Review all
-            </Link>
+            {canViewLeave && (
+              <Link to="/leave" className="text-sm font-medium text-primary hover:underline">
+                Review all
+              </Link>
+            )}
           </CardHeader>
           <CardContent className="space-y-3">
             {pendingLeaves.length === 0 ? (
@@ -848,7 +906,7 @@ function AdminDashboard({
                     {l.reason && (
                       <p className="line-clamp-2 text-xs text-muted-foreground">{l.reason}</p>
                     )}
-                    {can("approve_leave") && (
+                    {can("approve_leave") && canEditLeave && (
                       <div className="flex items-center gap-2 pt-1">
                         <Button
                           size="sm"
@@ -893,31 +951,33 @@ function AdminDashboard({
           </CardContent>
         </Card>
 
-        <Card className="rounded-2xl lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base">Recent activity</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {state.audit.length === 0 ? (
-              <EmptyState title="No activity yet" />
-            ) : (
-              state.audit.slice(0, 6).map((a) => (
-                <div
-                  key={a.id}
-                  className="flex items-start justify-between gap-3 border-b border-border/60 pb-2 last:border-0"
-                >
-                  <div>
-                    <p className="text-sm font-medium">{a.action}</p>
-                    <p className="text-xs text-muted-foreground">{a.detail}</p>
+        {canViewAudit && (
+          <Card className="rounded-2xl lg:col-span-2">
+            <CardHeader>
+              <CardTitle className="text-base">Recent activity</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {state.audit.length === 0 ? (
+                <EmptyState title="No activity yet" />
+              ) : (
+                state.audit.slice(0, 6).map((a) => (
+                  <div
+                    key={a.id}
+                    className="flex items-start justify-between gap-3 border-b border-border/60 pb-2 last:border-0"
+                  >
+                    <div>
+                      <p className="text-sm font-medium">{a.action}</p>
+                      <p className="text-xs text-muted-foreground">{a.detail}</p>
+                    </div>
+                    <span className="whitespace-nowrap text-xs text-muted-foreground">
+                      {fmtDateTime(a.at)}
+                    </span>
                   </div>
-                  <span className="whitespace-nowrap text-xs text-muted-foreground">
-                    {fmtDateTime(a.at)}
-                  </span>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </>
   );

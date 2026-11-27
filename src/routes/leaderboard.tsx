@@ -59,7 +59,8 @@ const AWARD_TYPES = [
 ];
 
 function LeaderboardPage() {
-  const { state, can } = useApp();
+  const { state, can, canEditModule } = useApp();
+  const canNominate = can("manage_recognition") && canEditModule("dashboard");
 
   const rows = state.users
     .filter((u) => u.active)
@@ -80,7 +81,7 @@ function LeaderboardPage() {
       <PageHeader
         title="Leaderboard & Recognition"
         description="Consistency, delivery and impact — celebrated every month."
-        actions={can("manage_recognition") ? <NominateDialog /> : null}
+        actions={canNominate ? <NominateDialog /> : null}
       />
 
       <div className="mb-6 grid gap-4 sm:grid-cols-3">

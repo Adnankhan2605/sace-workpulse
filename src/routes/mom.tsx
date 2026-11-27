@@ -29,7 +29,8 @@ export const Route = createFileRoute("/mom")({
 });
 
 function MomPage() {
-  const { me, ready, state } = useApp();
+  const { me, ready, state, canEditModule } = useApp();
+  const canEditMom = canEditModule("mom");
   const [documents, setDocuments] = React.useState<MomDocument[]>([]);
   const [brandAssets, setBrandAssets] = React.useState<MomBrandAsset[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -173,6 +174,7 @@ function MomPage() {
   };
 
   const canEditActiveDoc = Boolean(
+    canEditMom &&
     activeDoc &&
     me &&
     (activeDoc.createdBy === me.id ||
@@ -209,15 +211,17 @@ function MomPage() {
                 </p>
               </div>
             </div>
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setCreateOpen(true)}
-              className="gap-1.5 whitespace-nowrap shrink-0"
-            >
-              <Plus className="h-4 w-4" />
-              Create MOM
-            </Button>
+            {canEditMom && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => setCreateOpen(true)}
+                className="gap-1.5 whitespace-nowrap shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                Create MOM
+              </Button>
+            )}
           </div>
 
           <MomEditor
@@ -260,15 +264,17 @@ function MomPage() {
                   <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                   Refresh
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => setCreateOpen(true)}
-                  className="gap-1.5 whitespace-nowrap shrink-0"
-                >
-                  <Plus className="h-4 w-4" />
-                  Create MOM
-                </Button>
+                {canEditMom && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setCreateOpen(true)}
+                    className="gap-1.5 whitespace-nowrap shrink-0"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Create MOM
+                  </Button>
+                )}
               </div>
             }
           />
@@ -335,10 +341,12 @@ function MomPage() {
                   : "Try adjusting your search query or filter tab."
               }
               action={
-                <Button type="button" onClick={() => setCreateOpen(true)} className="gap-1.5">
-                  <Plus className="h-4 w-4" />
-                  Create First MOM
-                </Button>
+                canEditMom ? (
+                  <Button type="button" onClick={() => setCreateOpen(true)} className="gap-1.5">
+                    <Plus className="h-4 w-4" />
+                    Create First MOM
+                  </Button>
+                ) : undefined
               }
             />
           ) : (
@@ -416,15 +424,17 @@ function MomPage() {
         </div>
       )}
 
-      <MomCreateDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        onCreated={(newDoc) => {
-          setDocuments((prev) => [newDoc, ...prev]);
-          setActiveDocId(newDoc.id);
-        }}
-        onCreateBlank={() => void handleCreateBlank()}
-      />
+      {canEditMom && (
+        <MomCreateDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          onCreated={(newDoc) => {
+            setDocuments((prev) => [newDoc, ...prev]);
+            setActiveDocId(newDoc.id);
+          }}
+          onCreateBlank={() => void handleCreateBlank()}
+        />
+      )}
     </AppShell>
   );
 }

@@ -89,7 +89,8 @@ async function smtpApiFetch<T>(path: string, init: RequestInit = {}): Promise<T>
 }
 
 export function SmtpIntegrationSettings() {
-  const { me, log } = useApp();
+  const { me, canEditModule, log } = useApp();
+  const canEditSettings = canEditModule("settings_integrations");
 
   const [loading, setLoading] = React.useState(true);
   const [config, setConfig] = React.useState<PublicSmtpConfig | null>(null);
@@ -224,6 +225,7 @@ export function SmtpIntegrationSettings() {
   }
 
   function selectPreset(presetId: string) {
+    if (!canEditSettings) return;
     const preset = mailPresets.find((p) => p.id === presetId);
     if (!preset) return;
     setSelectedPresetId(preset.id);
@@ -237,6 +239,7 @@ export function SmtpIntegrationSettings() {
   }
 
   function handleEncryptionChange(next: SmtpEncryptionMode) {
+    if (!canEditSettings) return;
     setEncryption(next);
     if (next === "ssl_tls" && (port === "587" || port === "25")) {
       setPort("465");
@@ -265,6 +268,7 @@ export function SmtpIntegrationSettings() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEditSettings) return;
     const raw = buildPayload();
     const parsed = SaveSmtpConfigSchema.safeParse(raw);
     if (!parsed.success) {
@@ -297,6 +301,7 @@ export function SmtpIntegrationSettings() {
   }
 
   async function handleTest(mode: "verify" | "send_test") {
+    if (!canEditSettings) return;
     const raw = {
       ...buildPayload(),
       mode,
@@ -352,6 +357,7 @@ export function SmtpIntegrationSettings() {
   }
 
   async function handleDelete() {
+    if (!canEditSettings) return;
     setDeleting(true);
     setTestFeedback(null);
     try {
@@ -370,6 +376,7 @@ export function SmtpIntegrationSettings() {
 
   async function handleSaveTeams(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEditSettings) return;
     const raw = {
       webhookUrl: teamsWebhookUrl.trim() || undefined,
       enabled: teamsEnabled,
@@ -404,6 +411,7 @@ export function SmtpIntegrationSettings() {
   }
 
   async function handleTestTeams() {
+    if (!canEditSettings) return;
     const raw = {
       webhookUrl: teamsWebhookUrl.trim() || undefined,
     };
@@ -450,6 +458,7 @@ export function SmtpIntegrationSettings() {
   }
 
   async function handleDeleteTeams() {
+    if (!canEditSettings) return;
     setTeamsDeleting(true);
     setTeamsFeedback(null);
     try {
@@ -482,6 +491,7 @@ export function SmtpIntegrationSettings() {
 
   async function handleSaveWhatsApp(e: React.FormEvent) {
     e.preventDefault();
+    if (!canEditSettings) return;
     const raw = buildWhatsAppPayload();
     const parsed = SaveWhatsAppConfigSchema.safeParse(raw);
     if (!parsed.success) {
@@ -534,6 +544,7 @@ export function SmtpIntegrationSettings() {
   }
 
   async function handleTestWhatsApp() {
+    if (!canEditSettings) return;
     const raw = buildWhatsAppPayload();
     const parsed = TestWhatsAppConfigSchema.safeParse(raw);
     if (!parsed.success) {
@@ -596,6 +607,7 @@ export function SmtpIntegrationSettings() {
   }
 
   async function handleDeleteWhatsApp() {
+    if (!canEditSettings) return;
     setWhatsappDeleting(true);
     setWhatsappFeedback(null);
     try {
@@ -622,6 +634,7 @@ export function SmtpIntegrationSettings() {
     whatsappSaving ||
     whatsappTesting ||
     whatsappDeleting;
+  const controlsDisabled = busy || !canEditSettings;
 
   if (loading) {
     return (
@@ -904,7 +917,7 @@ export function SmtpIntegrationSettings() {
                 onCheckedChange={
                   isTeamsMode ? setTeamsEnabled : isWhatsAppMode ? setWhatsappEnabled : setEnabled
                 }
-                disabled={busy}
+                disabled={controlsDisabled}
               />
             </div>
           </div>
@@ -962,10 +975,10 @@ export function SmtpIntegrationSettings() {
                     <button
                       key={preset.id}
                       type="button"
-                      disabled={busy}
+                      disabled={controlsDisabled}
                       onClick={() => selectPreset(preset.id)}
                       className={cn(
-                        "rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-colors cursor-pointer",
+                        "rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60",
                         selected
                           ? "border-primary bg-primary/10 text-primary"
                           : "border-border bg-card text-foreground hover:bg-muted/50",
@@ -1012,7 +1025,7 @@ export function SmtpIntegrationSettings() {
                         }
                         autoComplete="off"
                         className="pr-10"
-                        disabled={busy}
+                        disabled={controlsDisabled}
                       />
                       <button
                         type="button"
@@ -1088,73 +1101,75 @@ export function SmtpIntegrationSettings() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
-                <div className="flex items-center gap-2">
-                  {isTeamsConfigured && (
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        >
-                          {teamsDeleting ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                          Remove Teams Integration
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Remove Microsoft Teams integration?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This deletes your encrypted Microsoft Teams webhook URL. Your saved SMTP
-                            mail and WhatsApp configurations will stay intact.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => void handleDeleteTeams()}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              {canEditSettings && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
+                  <div className="flex items-center gap-2">
+                    {isTeamsConfigured && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
                           >
-                            Remove Teams
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  )}
-                </div>
+                            {teamsDeleting ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                            Remove Teams Integration
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove Microsoft Teams integration?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This deletes your encrypted Microsoft Teams webhook URL. Your saved
+                              SMTP mail and WhatsApp configurations will stay intact.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => void handleDeleteTeams()}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Remove Teams
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                  </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void handleTestTeams()}
-                    className="gap-1.5"
-                  >
-                    {teamsTesting ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Send className="h-3.5 w-3.5" />
-                    )}
-                    {teamsTesting ? "Sending..." : "Send Test Teams Message"}
-                  </Button>
-                  <Button type="submit" disabled={busy} className="gap-1.5">
-                    {teamsSaving ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <MessageSquare className="h-3.5 w-3.5" />
-                    )}
-                    {teamsSaving ? "Saving..." : "Save Teams Settings"}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void handleTestTeams()}
+                      className="gap-1.5"
+                    >
+                      {teamsTesting ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Send className="h-3.5 w-3.5" />
+                      )}
+                      {teamsTesting ? "Sending..." : "Send Test Teams Message"}
+                    </Button>
+                    <Button type="submit" disabled={busy} className="gap-1.5">
+                      {teamsSaving ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <MessageSquare className="h-3.5 w-3.5" />
+                      )}
+                      {teamsSaving ? "Saving..." : "Save Teams Settings"}
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              )}
             </form>
           ) : isWhatsAppMode ? (
             /* WhatsApp Integration Form */
@@ -1166,13 +1181,13 @@ export function SmtpIntegrationSettings() {
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={controlsDisabled}
                     onClick={() => {
                       setWhatsappMode("cloud_api");
                       setWhatsappFeedback(null);
                     }}
                     className={cn(
-                      "rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-colors cursor-pointer",
+                      "rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60",
                       whatsappMode === "cloud_api"
                         ? "border-primary bg-primary/10 text-primary"
                         : "border-border bg-card text-foreground hover:bg-muted/50",
@@ -1182,13 +1197,13 @@ export function SmtpIntegrationSettings() {
                   </button>
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={controlsDisabled}
                     onClick={() => {
                       setWhatsappMode("webhook");
                       setWhatsappFeedback(null);
                     }}
                     className={cn(
-                      "rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-colors cursor-pointer",
+                      "rounded-xl border px-3 py-2.5 text-left text-xs font-medium transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60",
                       whatsappMode === "webhook"
                         ? "border-primary bg-primary/10 text-primary"
                         : "border-border bg-card text-foreground hover:bg-muted/50",
@@ -1222,7 +1237,7 @@ export function SmtpIntegrationSettings() {
                           onChange={(e) => setWhatsappPhoneNumberId(e.target.value)}
                           placeholder="e.g. 104298374615290"
                           className="font-mono tabular-nums"
-                          disabled={busy}
+                          disabled={controlsDisabled}
                           required
                         />
                       </div>
@@ -1247,7 +1262,7 @@ export function SmtpIntegrationSettings() {
                             }
                             autoComplete="off"
                             className="pr-10"
-                            disabled={busy}
+                            disabled={controlsDisabled}
                           />
                           <button
                             type="button"
@@ -1283,7 +1298,7 @@ export function SmtpIntegrationSettings() {
                           onChange={(e) => setWhatsappRecipientPhone(e.target.value)}
                           placeholder="+919876543210"
                           className="font-mono tabular-nums"
-                          disabled={busy}
+                          disabled={controlsDisabled}
                           required
                         />
                         <p className="text-[11px] text-muted-foreground">
@@ -1313,7 +1328,7 @@ export function SmtpIntegrationSettings() {
                             }
                             autoComplete="off"
                             className="pr-10"
-                            disabled={busy}
+                            disabled={controlsDisabled}
                           />
                           <button
                             type="button"
@@ -1349,7 +1364,7 @@ export function SmtpIntegrationSettings() {
                           onChange={(e) => setWhatsappRecipientPhone(e.target.value)}
                           placeholder="+919876543210"
                           className="font-mono tabular-nums"
-                          disabled={busy}
+                          disabled={controlsDisabled}
                         />
                         <p className="text-[11px] text-muted-foreground">
                           Passed as <code className="font-mono">to</code> in the webhook JSON
@@ -1411,73 +1426,75 @@ export function SmtpIntegrationSettings() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
-                <div className="flex items-center gap-2">
-                  {isWhatsAppConfigured && (
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        >
-                          {whatsappDeleting ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                          Remove WhatsApp Integration
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Remove WhatsApp integration?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This deletes your encrypted WhatsApp credentials. Your saved SMTP mail
-                            and Microsoft Teams configurations will stay intact.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => void handleDeleteWhatsApp()}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              {canEditSettings && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
+                  <div className="flex items-center gap-2">
+                    {isWhatsAppConfigured && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
                           >
-                            Remove WhatsApp
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  )}
-                </div>
+                            {whatsappDeleting ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                            Remove WhatsApp Integration
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove WhatsApp integration?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This deletes your encrypted WhatsApp credentials. Your saved SMTP mail
+                              and Microsoft Teams configurations will stay intact.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => void handleDeleteWhatsApp()}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Remove WhatsApp
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                  </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void handleTestWhatsApp()}
-                    className="gap-1.5"
-                  >
-                    {whatsappTesting ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Send className="h-3.5 w-3.5" />
-                    )}
-                    {whatsappTesting ? "Sending..." : "Send Test WhatsApp Message"}
-                  </Button>
-                  <Button type="submit" disabled={busy} className="gap-1.5">
-                    {whatsappSaving ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <MessageCircle className="h-3.5 w-3.5" />
-                    )}
-                    {whatsappSaving ? "Saving..." : "Save WhatsApp Settings"}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void handleTestWhatsApp()}
+                      className="gap-1.5"
+                    >
+                      {whatsappTesting ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Send className="h-3.5 w-3.5" />
+                      )}
+                      {whatsappTesting ? "Sending..." : "Send Test WhatsApp Message"}
+                    </Button>
+                    <Button type="submit" disabled={busy} className="gap-1.5">
+                      {whatsappSaving ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <MessageCircle className="h-3.5 w-3.5" />
+                      )}
+                      {whatsappSaving ? "Saving..." : "Save WhatsApp Settings"}
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              )}
             </form>
           ) : (
             /* Main SMTP Form */
@@ -1503,7 +1520,7 @@ export function SmtpIntegrationSettings() {
                       placeholder={
                         selectedPresetId === "outlook" ? "smtp-mail.outlook.com" : "smtp.gmail.com"
                       }
-                      disabled={busy}
+                      disabled={controlsDisabled}
                       required
                     />
                   </div>
@@ -1521,7 +1538,7 @@ export function SmtpIntegrationSettings() {
                         className="font-mono tabular-nums"
                         value={port}
                         onChange={(e) => setPort(e.target.value)}
-                        disabled={busy}
+                        disabled={controlsDisabled}
                         required
                       />
                     </div>
@@ -1532,7 +1549,7 @@ export function SmtpIntegrationSettings() {
                       <Select
                         value={encryption}
                         onValueChange={(v) => handleEncryptionChange(v as SmtpEncryptionMode)}
-                        disabled={busy}
+                        disabled={controlsDisabled}
                       >
                         <SelectTrigger id="smtp-encryption" className="w-full">
                           <SelectValue placeholder="Select encryption" />
@@ -1556,7 +1573,7 @@ export function SmtpIntegrationSettings() {
                       onChange={(e) => setUsername(e.target.value)}
                       placeholder="you@company.com"
                       autoComplete="username"
-                      disabled={busy}
+                      disabled={controlsDisabled}
                       required
                     />
                   </div>
@@ -1579,7 +1596,7 @@ export function SmtpIntegrationSettings() {
                         }
                         autoComplete="new-password"
                         className="pr-10"
-                        disabled={busy}
+                        disabled={controlsDisabled}
                       />
                       <button
                         type="button"
@@ -1620,7 +1637,7 @@ export function SmtpIntegrationSettings() {
                       value={fromName}
                       onChange={(e) => setFromName(e.target.value)}
                       placeholder="Alex Morgan"
-                      disabled={busy}
+                      disabled={controlsDisabled}
                       required
                     />
                   </div>
@@ -1635,7 +1652,7 @@ export function SmtpIntegrationSettings() {
                       value={fromEmail}
                       onChange={(e) => setFromEmail(e.target.value)}
                       placeholder="alex@company.com"
-                      disabled={busy}
+                      disabled={controlsDisabled}
                       required
                     />
                   </div>
@@ -1650,140 +1667,144 @@ export function SmtpIntegrationSettings() {
                       value={replyTo}
                       onChange={(e) => setReplyTo(e.target.value)}
                       placeholder="Leave blank to use From Email"
-                      disabled={busy}
+                      disabled={controlsDisabled}
                     />
                   </div>
 
                   {/* Connection Test & Test Email Box */}
-                  <div className="space-y-3 rounded-xl border border-border bg-card p-3.5">
-                    <p className="text-xs font-semibold text-foreground">
-                      Test &amp; Verify Mail Delivery
-                    </p>
-                    <div className="space-y-1.5">
-                      <Label
-                        htmlFor="smtp-test-recipient"
-                        className="text-[11px] text-muted-foreground"
-                      >
-                        Test Email Recipient
-                      </Label>
-                      <div className="flex flex-wrap gap-2">
-                        <Input
-                          id="smtp-test-recipient"
-                          type="email"
-                          value={testRecipient}
-                          onChange={(e) => setTestRecipient(e.target.value)}
-                          placeholder={me?.email || "recipient@example.com"}
-                          className="h-9 flex-1 min-w-[180px]"
-                          disabled={busy}
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => void handleTest("send_test")}
-                          className="h-9 gap-1.5 shrink-0"
+                  {canEditSettings && (
+                    <div className="space-y-3 rounded-xl border border-border bg-card p-3.5">
+                      <p className="text-xs font-semibold text-foreground">
+                        Test &amp; Verify Mail Delivery
+                      </p>
+                      <div className="space-y-1.5">
+                        <Label
+                          htmlFor="smtp-test-recipient"
+                          className="text-[11px] text-muted-foreground"
                         >
-                          {testingMode === "send_test" ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Send className="h-3.5 w-3.5" />
-                          )}
-                          {testingMode === "send_test" ? "Sending..." : "Send Test Mail"}
-                        </Button>
+                          Test Email Recipient
+                        </Label>
+                        <div className="flex flex-wrap gap-2">
+                          <Input
+                            id="smtp-test-recipient"
+                            type="email"
+                            value={testRecipient}
+                            onChange={(e) => setTestRecipient(e.target.value)}
+                            placeholder={me?.email || "recipient@example.com"}
+                            className="h-9 flex-1 min-w-[180px]"
+                            disabled={busy}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => void handleTest("send_test")}
+                            className="h-9 gap-1.5 shrink-0"
+                          >
+                            {testingMode === "send_test" ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Send className="h-3.5 w-3.5" />
+                            )}
+                            {testingMode === "send_test" ? "Sending..." : "Send Test Mail"}
+                          </Button>
+                        </div>
                       </div>
-                    </div>
 
-                    {testFeedback && (
-                      <div
-                        className={cn(
-                          "flex items-start gap-2 rounded-lg border p-2.5 text-xs",
-                          testFeedback.ok
-                            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                            : "border-destructive/30 bg-destructive/10 text-destructive",
-                        )}
-                      >
-                        {testFeedback.ok ? (
-                          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        ) : (
-                          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        )}
-                        <span>{testFeedback.message}</span>
-                      </div>
-                    )}
-                  </div>
+                      {testFeedback && (
+                        <div
+                          className={cn(
+                            "flex items-start gap-2 rounded-lg border p-2.5 text-xs",
+                            testFeedback.ok
+                              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                              : "border-destructive/30 bg-destructive/10 text-destructive",
+                          )}
+                        >
+                          {testFeedback.ok ? (
+                            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          ) : (
+                            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          )}
+                          <span>{testFeedback.message}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* Footer Action Row */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
-                <div className="flex items-center gap-2">
-                  {isConfigured && (
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        >
-                          {deleting ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                          Remove Integration
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Remove personal SMTP integration?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This permanently deletes your saved SMTP server settings and encrypted
-                            mail credentials for your account. Other team members&apos; integrations
-                            are unaffected.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => void handleDelete()}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              {canEditSettings && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
+                  <div className="flex items-center gap-2">
+                    {isConfigured && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={busy}
+                            className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
                           >
-                            Remove SMTP
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  )}
-                </div>
+                            {deleting ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
+                            Remove Integration
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Remove personal SMTP integration?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This permanently deletes your saved SMTP server settings and encrypted
+                              mail credentials for your account. Other team members&apos;
+                              integrations are unaffected.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => void handleDelete()}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Remove SMTP
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    )}
+                  </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void handleTest("verify")}
-                    className="gap-1.5"
-                  >
-                    {testingMode === "verify" ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <ShieldCheck className="h-3.5 w-3.5" />
-                    )}
-                    {testingMode === "verify" ? "Verifying..." : "Verify Connection"}
-                  </Button>
-                  <Button type="submit" disabled={busy} className="gap-1.5">
-                    {saving ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Mail className="h-3.5 w-3.5" />
-                    )}
-                    {saving ? "Saving..." : "Save SMTP Settings"}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void handleTest("verify")}
+                      className="gap-1.5"
+                    >
+                      {testingMode === "verify" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                      )}
+                      {testingMode === "verify" ? "Verifying..." : "Verify Connection"}
+                    </Button>
+                    <Button type="submit" disabled={busy} className="gap-1.5">
+                      {saving ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Mail className="h-3.5 w-3.5" />
+                      )}
+                      {saving ? "Saving..." : "Save SMTP Settings"}
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              )}
             </form>
           )}
         </CardContent>

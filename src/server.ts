@@ -154,20 +154,17 @@ async function handleBattalionApi(request: Request): Promise<Response | null> {
     if (path === "/api/presence" && (request.method === "PUT" || request.method === "POST")) {
       const { saveUserPresenceRecord } = await import("./lib/battalion.server.ts");
       const payload = await request.json();
-      const result = await saveUserPresenceRecord(auth.userId, payload);
+      const result = await saveUserPresenceRecord(auth.userId, payload, auth.role);
       return json(result, 200);
     }
 
     if (path === "/api/battalions" && request.method === "GET") {
       const { fetchPopulatedBattalions } = await import("./lib/battalion.server.ts");
-      const result = await fetchPopulatedBattalions(auth.userId);
+      const result = await fetchPopulatedBattalions(auth.userId, auth.role);
       return json(result, 200);
     }
 
     if (path === "/api/battalions" && request.method === "POST") {
-      if (auth.role !== "admin" && auth.role !== "super_admin") {
-        return json({ ok: false, error: "Forbidden: Admin or Super Admin role required." }, 403);
-      }
       const { createBattalionRecord } = await import("./lib/battalion.server.ts");
       const payload = await request.json();
       const result = await createBattalionRecord(auth.userId, auth.role, payload);
@@ -208,6 +205,8 @@ async function handleMessagesUploadApi(request: Request): Promise<Response | nul
     }
 
     try {
+      const { assertModuleAccess } = await import("./lib/permissions.server.ts");
+      await assertModuleAccess(auth.userId, auth.role, "messages_tickets", "edit");
       const formData = await request.formData();
       const file = formData.get("file");
       if (!(file instanceof File)) {
@@ -218,7 +217,7 @@ async function handleMessagesUploadApi(request: Request): Promise<Response | nul
       return json({ ok: true, attachment }, 201);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to upload file.";
-      return json({ ok: false, error: message }, 400);
+      return json({ ok: false, error: message }, message.startsWith("Forbidden:") ? 403 : 400);
     }
   }
 
@@ -308,14 +307,18 @@ async function handleMomApi(request: Request): Promise<Response | null> {
         const buffer = Buffer.from(rawB64, "base64");
         const sourceType = body.sourceType === "recording" ? "recording" : "upload";
         const titleOverride = body.title?.trim();
-        const result = await generateMomFromSource(auth.userId, {
-          buffer,
-          fileName: body.fileName || "meeting-source",
-          mimeType: body.mimeType || "",
-          sourceType,
-          languageHint: body.languageHint || "auto",
-          ...(titleOverride ? { titleOverride } : {}),
-        });
+        const result = await generateMomFromSource(
+          auth.userId,
+          {
+            buffer,
+            fileName: body.fileName || "meeting-source",
+            mimeType: body.mimeType || "",
+            sourceType,
+            languageHint: body.languageHint || "auto",
+            ...(titleOverride ? { titleOverride } : {}),
+          },
+          auth.role,
+        );
         return json(result, 201);
       }
 
@@ -329,12 +332,16 @@ async function handleMomApi(request: Request): Promise<Response | null> {
       const languageHint = String(formData.get("languageHint") ?? "auto");
       const titleOverride = String(formData.get("title") ?? "").trim();
 
-      const result = await generateMomFromSource(auth.userId, {
-        file,
-        sourceType,
-        languageHint,
-        ...(titleOverride ? { titleOverride } : {}),
-      });
+      const result = await generateMomFromSource(
+        auth.userId,
+        {
+          file,
+          sourceType,
+          languageHint,
+          ...(titleOverride ? { titleOverride } : {}),
+        },
+        auth.role,
+      );
       return json(result, 201);
     }
 
@@ -377,14 +384,18 @@ async function handleMomApi(request: Request): Promise<Response | null> {
         const buffer = Buffer.from(rawB64, "base64");
         const letterheadMode = body.letterheadMode === "fullpage" ? "fullpage" : "header";
         const assetName = body.name?.trim();
-        const result = await saveMomBrandAssetUpload(auth.userId, {
-          buffer,
-          fileName: body.fileName || `${body.kind}.png`,
-          mimeType: body.mimeType || "image/png",
-          kind: body.kind,
-          ...(assetName ? { name: assetName } : {}),
-          letterheadMode,
-        });
+        const result = await saveMomBrandAssetUpload(
+          auth.userId,
+          {
+            buffer,
+            fileName: body.fileName || `${body.kind}.png`,
+            mimeType: body.mimeType || "image/png",
+            kind: body.kind,
+            ...(assetName ? { name: assetName } : {}),
+            letterheadMode,
+          },
+          auth.role,
+        );
         return json(result, 201);
       }
 
@@ -401,12 +412,16 @@ async function handleMomApi(request: Request): Promise<Response | null> {
       const modeRaw = String(formData.get("letterheadMode") ?? "header");
       const letterheadMode = modeRaw === "fullpage" ? "fullpage" : "header";
 
-      const result = await saveMomBrandAssetUpload(auth.userId, {
-        file,
-        kind: kindRaw,
-        ...(name ? { name } : {}),
-        letterheadMode,
-      });
+      const result = await saveMomBrandAssetUpload(
+        auth.userId,
+        {
+          file,
+          kind: kindRaw,
+          ...(name ? { name } : {}),
+          letterheadMode,
+        },
+        auth.role,
+      );
       return json(result, 201);
     }
 
@@ -608,6 +623,14 @@ async function handleSmtpApi(request: Request): Promise<Response | null> {
   }
 
   try {
+    const { assertModuleAccess } = await import("./lib/permissions.server.ts");
+    await assertModuleAccess(
+      auth.userId,
+      auth.role,
+      "settings_integrations",
+      request.method === "GET" ? "view" : "edit",
+    );
+
     if (url.pathname === "/api/smtp" && request.method === "GET") {
       const { getMySmtpConfigRecord } = await import("./lib/smtp.server.ts");
       const config = await getMySmtpConfigRecord(auth.userId);
@@ -685,7 +708,11 @@ async function handleSmtpApi(request: Request): Promise<Response | null> {
     console.error("[SMTP API Error]", err);
     const message = err instanceof Error ? err.message : "SMTP request failed.";
     const lower = message.toLowerCase();
-    const status = lower.includes("too many requests") ? 429 : 400;
+    const status = message.startsWith("Forbidden:")
+      ? 403
+      : lower.includes("too many requests")
+        ? 429
+        : 400;
     return json({ ok: false, error: message, message }, status);
   }
 }
@@ -718,16 +745,6 @@ async function handleOwnerApi(request: Request): Promise<Response | null> {
   const auth = await resolveAuthenticatedUserFromRequest(request);
   if (!auth) {
     return json({ ok: false, error: "Unauthorized: Please sign in to continue." }, 401);
-  }
-
-  if (auth.role !== "super_admin") {
-    return json(
-      {
-        ok: false,
-        error: "Forbidden: Owner's Executive Dashboard is restricted to Super Admin only.",
-      },
-      403,
-    );
   }
 
   if (request.method !== "GET") {
@@ -831,6 +848,206 @@ async function handleOwnerApi(request: Request): Promise<Response | null> {
   }
 }
 
+async function handlePermissionsApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/permissions") {
+    return null;
+  }
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    });
+
+  const { hasPostgresConfig } = await import("./db/index.ts");
+  if (!hasPostgresConfig()) {
+    return json(
+      {
+        ok: false,
+        error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+      },
+      503,
+    );
+  }
+
+  const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
+  const auth = await resolveAuthenticatedUserFromRequest(request);
+  if (!auth) {
+    return json({ ok: false, error: "Unauthorized: Please sign in to continue." }, 401);
+  }
+
+  if (request.method !== "GET") {
+    const originHeader = request.headers.get("origin");
+    const hostHeader = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+    const hasSessionHeader = Boolean(request.headers.get("x-sace-session"));
+    if (originHeader && hostHeader && !hasSessionHeader) {
+      try {
+        if (new URL(originHeader).host !== hostHeader) {
+          return json({ ok: false, error: "Forbidden: Cross-origin request rejected." }, 403);
+        }
+      } catch {
+        return json({ ok: false, error: "Forbidden: Invalid origin header." }, 403);
+      }
+    }
+  }
+
+  try {
+    if (request.method === "GET") {
+      const { getPermissionsWorkspace } = await import("./lib/permissions.server.ts");
+      const data = await getPermissionsWorkspace({ userId: auth.userId, role: auth.role });
+      return json(data, 200);
+    }
+
+    if (request.method === "PUT" || request.method === "POST") {
+      if (auth.role !== "super_admin") {
+        return json(
+          { ok: false, error: "Forbidden: Only Super Admin can update module permissions." },
+          403,
+        );
+      }
+      const payload = await request.json();
+      const { savePermissionsUpdate } = await import("./lib/permissions.server.ts");
+      const data = await savePermissionsUpdate({ userId: auth.userId, role: auth.role }, payload);
+      return json(data, 200);
+    }
+
+    return json({ ok: false, error: "Method not allowed." }, 405);
+  } catch (err) {
+    console.error("[Permissions API Error]", err);
+    let message = err instanceof Error ? err.message : "Permissions request failed.";
+    if (
+      err &&
+      typeof err === "object" &&
+      "issues" in err &&
+      Array.isArray((err as { issues?: Array<{ message?: string }> }).issues)
+    ) {
+      const firstIssue = (err as { issues: Array<{ message?: string }> }).issues[0];
+      if (firstIssue?.message) {
+        message = firstIssue.message;
+      }
+    }
+    const status = message.startsWith("Forbidden:")
+      ? 403
+      : message.toLowerCase().includes("not found")
+        ? 404
+        : message.startsWith("Database error:")
+          ? 503
+          : 400;
+    return json({ ok: false, error: message }, status);
+  }
+}
+
+async function handleNotesApi(request: Request): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (url.pathname !== "/api/notes" && !url.pathname.startsWith("/api/notes/")) {
+    return null;
+  }
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    });
+
+  const { hasPostgresConfig } = await import("./db/index.ts");
+  if (!hasPostgresConfig()) {
+    return json(
+      {
+        ok: false,
+        error: "External PostgreSQL DATABASE_URL is not configured in Workspace Secrets.",
+      },
+      503,
+    );
+  }
+
+  const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
+  const auth = await resolveAuthenticatedUserFromRequest(request);
+  if (!auth) {
+    return json({ ok: false, error: "Unauthorized: Please sign in to continue." }, 401);
+  }
+
+  if (request.method !== "GET") {
+    const originHeader = request.headers.get("origin");
+    const hostHeader = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "";
+    const hasSessionHeader = Boolean(request.headers.get("x-sace-session"));
+    if (originHeader && hostHeader && !hasSessionHeader) {
+      try {
+        if (new URL(originHeader).host !== hostHeader) {
+          return json({ ok: false, error: "Forbidden: Cross-origin request rejected." }, 403);
+        }
+      } catch {
+        return json({ ok: false, error: "Forbidden: Invalid origin header." }, 403);
+      }
+    }
+  }
+
+  try {
+    const { listNotesForUser, createNoteForUser, updateNoteForUser, deleteNoteForUser } =
+      await import("./lib/notes.server.ts");
+    const caller = { userId: auth.userId, role: auth.role };
+
+    if (url.pathname === "/api/notes") {
+      if (request.method === "GET") {
+        const notes = await listNotesForUser(caller);
+        return json({ ok: true, notes }, 200);
+      }
+      if (request.method === "POST") {
+        const payload = await request.json();
+        const note = await createNoteForUser(caller, payload);
+        return json({ ok: true, note }, 201);
+      }
+      return json({ ok: false, error: "Method not allowed." }, 405);
+    }
+
+    const noteId = decodeURIComponent(url.pathname.slice("/api/notes/".length)).trim();
+    if (!noteId || noteId.includes("/")) {
+      return json({ ok: false, error: "Invalid note ID." }, 400);
+    }
+
+    if (request.method === "PUT" || request.method === "PATCH") {
+      const payload = await request.json();
+      const note = await updateNoteForUser(caller, noteId, payload);
+      return json({ ok: true, note }, 200);
+    }
+
+    if (request.method === "DELETE") {
+      await deleteNoteForUser(caller, noteId);
+      return json({ ok: true }, 200);
+    }
+
+    return json({ ok: false, error: "Method not allowed." }, 405);
+  } catch (err) {
+    console.error("[Notes API Error]", err);
+    let message = err instanceof Error ? err.message : "Notes request failed.";
+    if (
+      err &&
+      typeof err === "object" &&
+      "issues" in err &&
+      Array.isArray((err as { issues?: Array<{ message?: string }> }).issues)
+    ) {
+      const firstIssue = (err as { issues: Array<{ message?: string }> }).issues[0];
+      if (firstIssue?.message) {
+        message = firstIssue.message;
+      }
+    }
+    const status = message.startsWith("Forbidden:")
+      ? 403
+      : message.toLowerCase().includes("not found")
+        ? 404
+        : message.startsWith("Database error:")
+          ? 503
+          : 400;
+    return json({ ok: false, error: message }, status);
+  }
+}
+
 async function handleAuthApi(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -838,6 +1055,7 @@ async function handleAuthApi(request: Request): Promise<Response | null> {
     path !== "/api/auth/login" &&
     path !== "/api/auth/logout" &&
     path !== "/api/auth/session" &&
+    path !== "/api/auth/me" &&
     path !== "/api/auth/bootstrap-status" &&
     path !== "/api/auth/setup-admin"
   ) {
@@ -895,9 +1113,16 @@ async function handleAuthApi(request: Request): Promise<Response | null> {
         return json({ ok: false, error: result.error }, result.status);
       }
 
-      return json({ ok: true, user: result.user, sessionToken: result.sessionToken }, 201, {
-        "set-cookie": buildSessionSetCookieHeader(result.sessionToken, request),
-      });
+      const { getEffectivePermissionsForUser } = await import("./lib/permissions.server.ts");
+      const permissions = await getEffectivePermissionsForUser(result.user.id, result.user.role);
+
+      return json(
+        { ok: true, user: result.user, permissions, sessionToken: result.sessionToken },
+        201,
+        {
+          "set-cookie": buildSessionSetCookieHeader(result.sessionToken, request),
+        },
+      );
     }
 
     if (path === "/api/auth/login") {
@@ -918,9 +1143,16 @@ async function handleAuthApi(request: Request): Promise<Response | null> {
         return json({ ok: false, error: result.error }, result.status);
       }
 
-      return json({ ok: true, user: result.user, sessionToken: result.sessionToken }, 200, {
-        "set-cookie": buildSessionSetCookieHeader(result.sessionToken, request),
-      });
+      const { getEffectivePermissionsForUser } = await import("./lib/permissions.server.ts");
+      const permissions = await getEffectivePermissionsForUser(result.user.id, result.user.role);
+
+      return json(
+        { ok: true, user: result.user, permissions, sessionToken: result.sessionToken },
+        200,
+        {
+          "set-cookie": buildSessionSetCookieHeader(result.sessionToken, request),
+        },
+      );
     }
 
     if (path === "/api/auth/logout") {
@@ -938,9 +1170,25 @@ async function handleAuthApi(request: Request): Promise<Response | null> {
       const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
       const auth = await resolveAuthenticatedUserFromRequest(request);
       if (!auth) {
-        return json({ authenticated: false, user: null }, 200);
+        return json({ authenticated: false, user: null, permissions: null }, 200);
       }
-      return json({ authenticated: true, user: auth.user }, 200);
+      const { getEffectivePermissionsForUser } = await import("./lib/permissions.server.ts");
+      const permissions = await getEffectivePermissionsForUser(auth.userId, auth.role);
+      return json({ authenticated: true, user: auth.user, permissions }, 200);
+    }
+
+    if (path === "/api/auth/me") {
+      if (request.method !== "GET") {
+        return json({ ok: false, error: "Method not allowed." }, 405);
+      }
+      const { resolveAuthenticatedUserFromRequest } = await import("./lib/auth.server.ts");
+      const auth = await resolveAuthenticatedUserFromRequest(request);
+      if (!auth) {
+        return json({ ok: false, error: "Unauthorized: Please sign in to continue." }, 401);
+      }
+      const { getEffectivePermissionsForUser } = await import("./lib/permissions.server.ts");
+      const permissions = await getEffectivePermissionsForUser(auth.userId, auth.role);
+      return json({ ok: true, user: auth.user, permissions }, 200);
     }
 
     return json({ ok: false, error: "Method not allowed." }, 405);
@@ -1019,6 +1267,14 @@ export default {
       const authResponse = await handleAuthApi(request);
       if (authResponse) {
         return withSecurityHeaders(authResponse);
+      }
+      const permissionsResponse = await handlePermissionsApi(request);
+      if (permissionsResponse) {
+        return withSecurityHeaders(permissionsResponse);
+      }
+      const notesResponse = await handleNotesApi(request);
+      if (notesResponse) {
+        return withSecurityHeaders(notesResponse);
       }
       const ownerResponse = await handleOwnerApi(request);
       if (ownerResponse) {

@@ -66,13 +66,24 @@ export const Route = createFileRoute("/team")({
 });
 
 function TeamPage() {
-  const { state, me, can, saveUser, deleteAccount, log, visibleUsers } = useApp();
+  const {
+    state,
+    me,
+    can,
+    canViewModule,
+    canEditModule,
+    saveUser,
+    deleteAccount,
+    log,
+    visibleUsers,
+  } = useApp();
   const [createOpen, setCreateOpen] = React.useState(false);
   const [policyUser, setPolicyUser] = React.useState<EditablePolicyUser | null>(null);
 
-  if (!can("manage_users")) return <NoAccess />;
+  if (!canViewModule("user_management")) return <NoAccess />;
   const people = visibleUsers();
   const canManageAdmins = can("manage_admins");
+  const canEditUsers = canEditModule("user_management");
   const isSuperAdmin = me?.role === "super_admin";
 
   const apply = async (
@@ -80,6 +91,7 @@ function TeamPage() {
     success: string,
     logLine: [string, string],
   ) => {
+    if (!canEditUsers) return;
     const res = await saveUser(input);
     if (!res.ok) {
       toast.error(res.error ?? "Could not save the account");
@@ -90,6 +102,7 @@ function TeamPage() {
   };
 
   const handleDelete = async (userId: string, fullName: string) => {
+    if (!canEditUsers) return;
     const res = await deleteAccount(userId);
     if (!res.ok) {
       toast.error(res.error ?? "Could not delete account");
@@ -105,10 +118,12 @@ function TeamPage() {
         description="Accounts are created by authorized administrators — there is no public sign-up."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={() => setCreateOpen(true)}>
-              <UserPlus className="mr-1 h-4 w-4" /> New account
-            </Button>
-            {canManageAdmins && (
+            {canEditUsers && (
+              <Button onClick={() => setCreateOpen(true)}>
+                <UserPlus className="mr-1 h-4 w-4" /> New account
+              </Button>
+            )}
+            {(canManageAdmins || canViewModule("user_management")) && (
               <Button variant="outline" asChild>
                 <Link to="/roles">Roles & Permissions</Link>
               </Button>
@@ -117,20 +132,22 @@ function TeamPage() {
         }
       />
 
-      <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />
+      {canEditUsers && <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />}
       {people.length === 0 ? (
         <EmptyState title="No accounts yet" />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {people.map((u) => {
             const manager = state.users.find((x) => x.id === u.reportingAdminId);
-            const editable = canManageAdmins || u.role === "member";
+            const editable = canEditUsers && (canManageAdmins || u.role === "member");
             const canEditPolicy =
-              isSuperAdmin ||
-              (me?.role === "admin" &&
-                (can("manage_users") || can("approve_leave")) &&
-                u.role === "member");
+              canEditUsers &&
+              (isSuperAdmin ||
+                (me?.role === "admin" &&
+                  (can("manage_users") || can("approve_leave")) &&
+                  u.role === "member"));
             const canDelete =
+              canEditUsers &&
               u.id !== me?.id &&
               u.id !== "u-hakeem" &&
               u.id !== "u-superadmin" &&
@@ -282,13 +299,15 @@ function TeamPage() {
         </div>
       )}
 
-      <EditUserPolicyDialog
-        user={policyUser}
-        open={Boolean(policyUser)}
-        onOpenChange={(open) => {
-          if (!open) setPolicyUser(null);
-        }}
-      />
+      {canEditUsers && (
+        <EditUserPolicyDialog
+          user={policyUser}
+          open={Boolean(policyUser)}
+          onOpenChange={(open) => {
+            if (!open) setPolicyUser(null);
+          }}
+        />
+      )}
     </>
   );
 }

@@ -52,8 +52,9 @@ export const Route = createFileRoute("/leave")({
 });
 
 function LeavePage() {
-  const { state, me, can, visibleUsers, update, saveUser, notify, log } = useApp();
+  const { state, me, can, canEditModule, visibleUsers, update, saveUser, notify, log } = useApp();
   const isManager = can("approve_leave");
+  const canEditLeave = canEditModule("leave");
   const [activeTab, setActiveTab] = React.useState<"team" | "my">(isManager ? "team" : "my");
   const [statusFilter, setStatusFilter] = React.useState("all");
 
@@ -66,8 +67,8 @@ function LeavePage() {
   const rows = scope.filter((l) => statusFilter === "all" || l.status === statusFilter);
 
   const decide = (id: string, status: "approved" | "rejected", comment: string) => {
-    if (!isManager) {
-      toast.error("Manager access required.");
+    if (!canEditLeave || !isManager) {
+      toast.error("Edit permission and manager access required.");
       return;
     }
     const leave = state.leaves.find((l) => l.id === id);
@@ -115,7 +116,7 @@ function LeavePage() {
             ? "Review and approve team leave requests or apply for your own leave."
             : "Apply for leave and track your balances."
         }
-        actions={<ApplyLeaveDialog />}
+        actions={canEditLeave ? <ApplyLeaveDialog /> : undefined}
       />
 
       {isManager && (
@@ -206,7 +207,7 @@ function LeavePage() {
                     </div>
                     <StatusPill value={l.status} />
                   </div>
-                  {isManager && activeTab === "team" && l.status === "pending" ? (
+                  {canEditLeave && isManager && activeTab === "team" && l.status === "pending" ? (
                     <DecisionRow onDecide={(status, comment) => decide(l.id, status, comment)} />
                   ) : null}
                 </CardContent>

@@ -100,7 +100,8 @@ export const Route = createFileRoute("/tasks")({
 });
 
 function TasksPage() {
-  const { state, me, visibleUsers, update, log } = useApp();
+  const { state, me, visibleUsers, update, log, canEditModule } = useApp();
+  const canEditTasks = canEditModule("tasks");
   const isAdmin = me?.role !== "member";
   const [activeTab, setActiveTab] = React.useState<"team" | "my" | "weekly" | "proofs">(
     isAdmin ? "team" : "my",
@@ -191,13 +192,15 @@ function TasksPage() {
             : "Plan your tasks, upload completion proofs, and track status approvals."
         }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <NewTaskDialog
-              defaultAssigneeId={me!.id}
-              teamMembers={teamMembers}
-              canAssignOthers={isAdmin}
-            />
-          </div>
+          canEditTasks ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <NewTaskDialog
+                defaultAssigneeId={me!.id}
+                teamMembers={teamMembers}
+                canAssignOthers={isAdmin}
+              />
+            </div>
+          ) : undefined
         }
       />
 
@@ -378,7 +381,7 @@ function TasksPage() {
                           </span>
                         </div>
 
-                        {isAdmin && task.status === "submitted" && (
+                        {isAdmin && canEditTasks && task.status === "submitted" && (
                           <TaskActions
                             task={task}
                             isAdmin={isAdmin}
@@ -503,7 +506,7 @@ function TasksPage() {
                   task.dueDate < todayKey && !["approved", "completed"].includes(task.status);
                 const assignee = state.users.find((u) => u.id === task.assigneeId);
                 const isAssignedToMe = task.assigneeId === me!.id;
-                const canEditTask = isAdmin || task.assignedById === me!.id;
+                const canEditTask = canEditTasks && (isAdmin || task.assignedById === me!.id);
 
                 return (
                   <Card key={task.id} className="rounded-2xl transition-shadow hover:shadow-sm">
@@ -698,7 +701,9 @@ function TasksPage() {
                       {isAdmin && task.proofs.length > 0 && (
                         <ProofReviewSection
                           task={task}
+                          disabled={!canEditTasks}
                           onStatusChange={(newStatus) => {
+                            if (!canEditTasks) return;
                             if (!isAdmin) {
                               toast.error("Admin privileges required to review task proofs.");
                               return;
@@ -800,12 +805,15 @@ function TaskActions({
   compact?: boolean;
   onPreviewProof?: (proof: TaskProof, taskTitle: string, assigneeName: string) => void;
 }) {
-  const { update, log, me, notify, state } = useApp();
+  const { update, log, me, notify, state, canEditModule } = useApp();
+  const canEditTasks = canEditModule("tasks");
   const [reviewOpen, setReviewOpen] = React.useState(false);
   const [reviewNote, setReviewNote] = React.useState("");
   const [reviewStatus, setReviewStatus] = React.useState<"approved" | "rejected" | "reupload">(
     "approved",
   );
+
+  if (!canEditTasks) return null;
 
   const assigneeUser = state.users.find((u) => u.id === task.assigneeId);
   const assigneeName = assigneeUser?.fullName ?? "Team Member";

@@ -66,7 +66,8 @@ function formatWeeklyActionLabel(action: TaskWeeklyAction | null | undefined): s
 }
 
 export function WeeklyTaskPlanner({ isAdmin, teamMembers, onEditTask }: WeeklyTaskPlannerProps) {
-  const { state, me, update, log, notify } = useApp();
+  const { state, me, update, log, notify, canEditModule } = useApp();
+  const canEditTasks = canEditModule("tasks");
 
   const today = React.useMemo(() => new Date(), []);
   const isMonday = today.getDay() === 1;
@@ -604,24 +605,26 @@ export function WeeklyTaskPlanner({ isAdmin, teamMembers, onEditTask }: WeeklyTa
                     </span>
                   </div>
 
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      if (isAddingHere) {
-                        setQuickPlanDay(null);
-                      } else {
-                        setQuickPlanDay(day.dateKey);
-                        setQuickPlanTitle("");
-                        setQuickPlanDesc("");
-                      }
-                    }}
-                    className="h-8 gap-1 text-xs whitespace-nowrap shrink-0"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    {isAddingHere ? "Close" : `Plan for ${day.dayShort}`}
-                  </Button>
+                  {canEditTasks && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (isAddingHere) {
+                          setQuickPlanDay(null);
+                        } else {
+                          setQuickPlanDay(day.dateKey);
+                          setQuickPlanTitle("");
+                          setQuickPlanDesc("");
+                        }
+                      }}
+                      className="h-8 gap-1 text-xs whitespace-nowrap shrink-0"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      {isAddingHere ? "Close" : `Plan for ${day.dayShort}`}
+                    </Button>
+                  )}
                 </div>
 
                 {isAddingHere && (
@@ -700,7 +703,7 @@ export function WeeklyTaskPlanner({ isAdmin, teamMembers, onEditTask }: WeeklyTa
                   <div className="divide-y divide-border">
                     {dayTasks.map((task) => {
                       const assignee = state.users.find((u) => u.id === task.assigneeId);
-                      const canAct = isAdmin || task.assigneeId === me.id;
+                      const canAct = canEditTasks && (isAdmin || task.assigneeId === me.id);
                       const done = isDoneStatus(task.status);
 
                       return (
@@ -998,7 +1001,7 @@ export function WeeklyTaskPlanner({ isAdmin, teamMembers, onEditTask }: WeeklyTa
                 const compDate = getTaskWeekDate(task);
                 const dayInfo = activeReviewDayMap.get(compDate);
                 const assignee = state.users.find((u) => u.id === task.assigneeId);
-                const canAct = isAdmin || task.assigneeId === me.id;
+                const canAct = canEditTasks && (isAdmin || task.assigneeId === me.id);
                 const latestComment =
                   task.comments.length > 0 ? task.comments[task.comments.length - 1] : null;
 
@@ -1204,7 +1207,7 @@ export function WeeklyTaskPlanner({ isAdmin, teamMembers, onEditTask }: WeeklyTa
             ) : (
               <div className="divide-y divide-border">
                 {unscheduledActiveTasks.map((task) => {
-                  const canAct = isAdmin || task.assigneeId === me.id;
+                  const canAct = canEditTasks && (isAdmin || task.assigneeId === me.id);
                   return (
                     <div
                       key={task.id}

@@ -4,6 +4,11 @@ import { eq, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, hasPostgresConfig } from "../db/index.ts";
 import * as schema from "../db/schema.ts";
+import {
+  DEFAULT_ADMIN_MODULE_PERMISSIONS,
+  DEFAULT_MEMBER_MODULE_PERMISSIONS,
+  MODULE_KEYS,
+} from "./permissions.ts";
 import { checkRateLimit, getClientIpFromRequest } from "./rate-limit.server.ts";
 import { PASSWORD_POLICY_ERROR, isStrongPassword } from "./security.ts";
 import { DEFAULT_ADMIN_PERMS, createEmptyPortalState } from "./seed.ts";
@@ -362,6 +367,63 @@ async function ensurePostgresTablesExist(): Promise<void> {
       "updated_at" text NOT NULL
     )
   `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "role_permissions" (
+      "role" text NOT NULL,
+      "module_key" text NOT NULL,
+      "can_view" boolean DEFAULT true NOT NULL,
+      "can_edit" boolean DEFAULT true NOT NULL,
+      "updated_at" text NOT NULL,
+      "updated_by" text,
+      PRIMARY KEY ("role", "module_key")
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "user_permission_overrides" (
+      "user_id" text NOT NULL,
+      "module_key" text NOT NULL,
+      "can_view" boolean DEFAULT true NOT NULL,
+      "can_edit" boolean DEFAULT true NOT NULL,
+      "updated_at" text NOT NULL,
+      "updated_by" text,
+      PRIMARY KEY ("user_id", "module_key")
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS "notes" (
+      "id" text PRIMARY KEY NOT NULL,
+      "user_id" text NOT NULL,
+      "title" text DEFAULT '' NOT NULL,
+      "content" text NOT NULL,
+      "ink_id" text DEFAULT 'purple' NOT NULL,
+      "paper_id" text DEFAULT 'butter' NOT NULL,
+      "sound_enabled" boolean DEFAULT true NOT NULL,
+      "reminder_at" text,
+      "reminder_triggered" boolean DEFAULT false NOT NULL,
+      "reminder_dismissed" boolean DEFAULT false NOT NULL,
+      "created_at" text NOT NULL,
+      "updated_at" text NOT NULL
+    )
+  `);
+  await db.execute(
+    sql`ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "title" text DEFAULT '' NOT NULL`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "ink_id" text DEFAULT 'purple' NOT NULL`,
+  );
+  await db.execute(
+    sql`ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "paper_id" text DEFAULT 'butter' NOT NULL`,
+  );
+  await db.execute(sql`
+    ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "sound_enabled" boolean DEFAULT true NOT NULL
+  `);
+  await db.execute(sql`ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "reminder_at" text`);
+  await db.execute(sql`
+    ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "reminder_triggered" boolean DEFAULT false NOT NULL
+  `);
+  await db.execute(sql`
+    ALTER TABLE "notes" ADD COLUMN IF NOT EXISTS "reminder_dismissed" boolean DEFAULT false NOT NULL
+  `);
 }
 
 async function runStartupMigration(): Promise<void> {
@@ -399,6 +461,34 @@ async function runStartupMigration(): Promise<void> {
     .insert(schema.portalState)
     .values({ id: PORTAL_STATE_ID, data: createEmptyPortalState() })
     .onConflictDoNothing({ target: schema.portalState.id });
+
+  // Seed default role permissions non-destructively (never overwrite customized rows)
+  const nowIso = new Date().toISOString();
+  const defaultRoleRows = [
+    ...MODULE_KEYS.map((moduleKey) => ({
+      role: "admin",
+      moduleKey,
+      canView: DEFAULT_ADMIN_MODULE_PERMISSIONS[moduleKey].view,
+      canEdit: DEFAULT_ADMIN_MODULE_PERMISSIONS[moduleKey].edit,
+      updatedAt: nowIso,
+      updatedBy: "system",
+    })),
+    ...MODULE_KEYS.map((moduleKey) => ({
+      role: "member",
+      moduleKey,
+      canView: DEFAULT_MEMBER_MODULE_PERMISSIONS[moduleKey].view,
+      canEdit: DEFAULT_MEMBER_MODULE_PERMISSIONS[moduleKey].edit,
+      updatedAt: nowIso,
+      updatedBy: "system",
+    })),
+  ];
+
+  await db
+    .insert(schema.rolePermissions)
+    .values(defaultRoleRows)
+    .onConflictDoNothing({
+      target: [schema.rolePermissions.role, schema.rolePermissions.moduleKey],
+    });
 }
 
 export async function initializeDatabaseOnStartup(): Promise<void> {

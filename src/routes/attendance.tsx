@@ -95,8 +95,17 @@ const DOT: Record<AttendanceStatus, string> = {
 };
 
 function AttendancePage() {
-  const { state, me, visibleUsers, attendanceStatus, punchInWithLocation, update, notify } =
-    useApp();
+  const {
+    state,
+    me,
+    visibleUsers,
+    attendanceStatus,
+    punchInWithLocation,
+    update,
+    notify,
+    canEditModule,
+  } = useApp();
+  const canEditAttendance = canEditModule("attendance");
   const isAdmin = me?.role !== "member";
   const [activeTab, setActiveTab] = React.useState<"daily" | "calendar">(
     isAdmin ? "daily" : "calendar",
@@ -432,7 +441,11 @@ function AttendancePage() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {!myRecordToday?.punchIn ? (
+            {!canEditAttendance ? (
+              <span className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-1.5 text-xs font-semibold text-muted-foreground">
+                <Eye className="h-3.5 w-3.5" /> Attendance View-Only
+              </span>
+            ) : !myRecordToday?.punchIn ? (
               <Button size="sm" disabled={punchBusy} onClick={punchIn} className="gap-2 shadow-sm">
                 {punchBusy ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -619,65 +632,71 @@ function AttendancePage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2 flex-1">
                 {/* Select All Dropdown */}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm" className="h-9 gap-1.5 text-xs font-medium">
-                      <ListChecks className="h-4 w-4 text-primary" />
-                      <span>
-                        {selectedUserIds.length > 0
-                          ? `Selected (${selectedUserIds.length})`
-                          : "Select All / Filtered"}
-                      </span>
-                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground ml-0.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-56">
-                    <DropdownMenuLabel className="text-xs">
-                      Batch Selection Options
-                    </DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={() => handleSelectAll("all_filtered")}
-                      className="text-xs cursor-pointer"
-                    >
-                      <CheckSquare className="h-3.5 w-3.5 mr-2 text-primary" />
-                      Select All Filtered ({filteredRoster.length})
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => handleSelectAll("all_team")}
-                      className="text-xs cursor-pointer"
-                    >
-                      <Users className="h-3.5 w-3.5 mr-2" />
-                      Select All Team ({teamMembers.length})
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => handleSelectAll("working")}
-                      className="text-xs cursor-pointer"
-                    >
-                      <UserCheck className="h-3.5 w-3.5 mr-2 text-teal-600" />
-                      Select Currently Working ({workingNow})
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => handleSelectAll("absent")}
-                      className="text-xs cursor-pointer"
-                    >
-                      <Clock className="h-3.5 w-3.5 mr-2 text-destructive" />
-                      Select Absent ({absentCount})
-                    </DropdownMenuItem>
-                    {selectedUserIds.length > 0 && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          onClick={() => handleSelectAll("none")}
-                          className="text-xs text-muted-foreground cursor-pointer"
-                        >
-                          <Square className="h-3.5 w-3.5 mr-2" />
-                          Deselect All
-                        </DropdownMenuItem>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                {canEditAttendance && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-9 gap-1.5 text-xs font-medium"
+                      >
+                        <ListChecks className="h-4 w-4 text-primary" />
+                        <span>
+                          {selectedUserIds.length > 0
+                            ? `Selected (${selectedUserIds.length})`
+                            : "Select All / Filtered"}
+                        </span>
+                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground ml-0.5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="w-56">
+                      <DropdownMenuLabel className="text-xs">
+                        Batch Selection Options
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => handleSelectAll("all_filtered")}
+                        className="text-xs cursor-pointer"
+                      >
+                        <CheckSquare className="h-3.5 w-3.5 mr-2 text-primary" />
+                        Select All Filtered ({filteredRoster.length})
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => handleSelectAll("all_team")}
+                        className="text-xs cursor-pointer"
+                      >
+                        <Users className="h-3.5 w-3.5 mr-2" />
+                        Select All Team ({teamMembers.length})
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => handleSelectAll("working")}
+                        className="text-xs cursor-pointer"
+                      >
+                        <UserCheck className="h-3.5 w-3.5 mr-2 text-teal-600" />
+                        Select Currently Working ({workingNow})
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => handleSelectAll("absent")}
+                        className="text-xs cursor-pointer"
+                      >
+                        <Clock className="h-3.5 w-3.5 mr-2 text-destructive" />
+                        Select Absent ({absentCount})
+                      </DropdownMenuItem>
+                      {selectedUserIds.length > 0 && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={() => handleSelectAll("none")}
+                            className="text-xs text-muted-foreground cursor-pointer"
+                          >
+                            <Square className="h-3.5 w-3.5 mr-2" />
+                            Deselect All
+                          </DropdownMenuItem>
+                        </>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
 
                 <div className="relative min-w-[180px] max-w-xs flex-1">
                   <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -721,7 +740,7 @@ function AttendancePage() {
             </div>
 
             {/* Bulk Action Toolbar when items are selected */}
-            {selectedUserIds.length > 0 && (
+            {canEditAttendance && selectedUserIds.length > 0 && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs">
                 <div className="flex items-center gap-2">
                   <Badge
@@ -776,17 +795,19 @@ function AttendancePage() {
                   <table className="w-full text-left text-sm">
                     <thead className="border-b border-border bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
                       <tr>
-                        <th className="w-10 px-4 py-3.5 text-center">
-                          <input
-                            type="checkbox"
-                            checked={isAllFilteredSelected}
-                            onChange={(e) =>
-                              handleSelectAll(e.target.checked ? "all_filtered" : "none")
-                            }
-                            className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
-                            title="Select / Deselect all filtered rows"
-                          />
-                        </th>
+                        {canEditAttendance && (
+                          <th className="w-10 px-4 py-3.5 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isAllFilteredSelected}
+                              onChange={(e) =>
+                                handleSelectAll(e.target.checked ? "all_filtered" : "none")
+                              }
+                              className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+                              title="Select / Deselect all filtered rows"
+                            />
+                          </th>
+                        )}
                         <th className="px-4 py-3.5 font-semibold">Employee</th>
                         <th className="px-4 py-3.5 font-semibold">Department</th>
                         <th className="px-4 py-3.5 font-semibold">Punch In</th>
@@ -800,7 +821,10 @@ function AttendancePage() {
                     <tbody className="divide-y divide-border">
                       {filteredRoster.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="py-10 text-center text-muted-foreground">
+                          <td
+                            colSpan={canEditAttendance ? 9 : 8}
+                            className="py-10 text-center text-muted-foreground"
+                          >
                             No team members match the search and filter criteria.
                           </td>
                         </tr>
@@ -816,14 +840,16 @@ function AttendancePage() {
                                   isSelected && "bg-primary/5 hover:bg-primary/10",
                                 )}
                               >
-                                <td className="w-10 px-4 py-4 text-center">
-                                  <input
-                                    type="checkbox"
-                                    checked={isSelected}
-                                    onChange={() => toggleSelectUser(user.id)}
-                                    className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
-                                  />
-                                </td>
+                                {canEditAttendance && (
+                                  <td className="w-10 px-4 py-4 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => toggleSelectUser(user.id)}
+                                      className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+                                    />
+                                  </td>
+                                )}
                                 <td className="px-4 py-4">
                                   <div className="flex items-center gap-3">
                                     <Initials

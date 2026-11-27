@@ -4,9 +4,14 @@ import type { Task } from "@/lib/types";
 interface ProofReviewSectionProps {
   task: Task & { proofStatus?: string };
   onStatusChange?: (newStatus: string) => void;
+  disabled?: boolean;
 }
 
-export default function ProofReviewSection({ task, onStatusChange }: ProofReviewSectionProps) {
+export default function ProofReviewSection({
+  task,
+  onStatusChange,
+  disabled = false,
+}: ProofReviewSectionProps) {
   // State for the proof status ('Pending', 'Accepted', 'Rejected', 'Re-upload')
   const [proofStatus, setProofStatus] = useState(
     task.proofStatus ||
@@ -34,6 +39,7 @@ export default function ProofReviewSection({ task, onStatusChange }: ProofReview
   };
 
   const handleStatusChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (disabled) return;
     const newStatus = e.target.value;
     setProofStatus(newStatus);
     onStatusChange?.(newStatus);
@@ -77,8 +83,9 @@ export default function ProofReviewSection({ task, onStatusChange }: ProofReview
           <div className="relative">
             <select
               value={proofStatus}
+              disabled={disabled}
               onChange={handleStatusChange}
-              className={`text-xs font-bold px-3 py-1.5 rounded-xl border appearance-none pr-8 cursor-pointer focus:outline-none focus:ring-2 focus:ring-purple-500 transition-colors ${getStatusBadgeStyle(proofStatus)}`}
+              className={`text-xs font-bold px-3 py-1.5 rounded-xl border appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-colors ${disabled ? "cursor-not-allowed opacity-70" : "cursor-pointer"} ${getStatusBadgeStyle(proofStatus)}`}
             >
               <option value="Pending" disabled>
                 Pending Review

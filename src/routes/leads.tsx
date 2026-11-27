@@ -49,8 +49,9 @@ export const Route = createFileRoute("/leads")({
 });
 
 function LeadsPage() {
-  const { state, me, can, update, log, notify } = useApp();
+  const { state, me, can, canEditModule, update, log, notify } = useApp();
   const canUpload = can("upload_leads");
+  const canEditLeads = canUpload && canEditModule("dashboard");
   const visible = canUpload ? state.leads : state.leads.filter((l) => l.visibility === "public");
 
   return (
@@ -62,7 +63,7 @@ function LeadsPage() {
             ? "Upload datasets and control visibility and edit access."
             : "Datasets published to the team by your admins."
         }
-        actions={canUpload ? <UploadDialog /> : null}
+        actions={canEditLeads ? <UploadDialog /> : null}
       />
 
       {visible.length === 0 ? (
@@ -109,7 +110,7 @@ function LeadsPage() {
                       </span>
                     ))}
                   </div>
-                  {canUpload ? (
+                  {canEditLeads ? (
                     <div className="mt-4 flex flex-wrap gap-2">
                       <Button
                         size="sm"

@@ -98,7 +98,8 @@ function categoryIcon(category: VaultCategory) {
 }
 
 function VaultPage() {
-  const { state, me, update, notify, log } = useApp();
+  const { state, me, canEditModule, update, notify, log } = useApp();
+  const canEditVault = canEditModule("vault");
   const navigate = useNavigate();
   const { check: checkParam } = Route.useSearch();
 
@@ -278,6 +279,7 @@ function VaultPage() {
   };
 
   const openCreateModal = (mode: "personal" | "send" = "personal") => {
+    if (!canEditVault) return;
     resetCreateForm();
     setDeliveryMode(mode);
     if (activeTeammates[0]?.id) {
@@ -288,7 +290,7 @@ function VaultPage() {
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!me) return;
+    if (!me || !canEditVault) return;
 
     const cleanTitle = title.trim();
     const cleanSecret = secretValue.trim();
@@ -408,7 +410,7 @@ function VaultPage() {
       return next;
     });
     const target = allVaults.find((v) => v.id === itemId);
-    if (target && !target.recipientId && target.visibility === "open") {
+    if (canEditVault && target && !target.recipientId && target.visibility === "open") {
       update((d) => {
         const found = (d.vaultItems ?? []).find((v) => v.id === itemId);
         if (found) {
@@ -477,7 +479,12 @@ function VaultPage() {
       setPersonalPassphrase(candidate);
     }
     setDecryptedMap((prev) => ({ ...prev, [unlockTarget.id]: res.data }));
-    if (me && unlockTarget.recipientId === me.id && !unlockTarget.checkedByRecipient) {
+    if (
+      canEditVault &&
+      me &&
+      unlockTarget.recipientId === me.id &&
+      !unlockTarget.checkedByRecipient
+    ) {
       update((d) => {
         const found = (d.vaultItems ?? []).find((v) => v.id === unlockTarget.id);
         if (found) {
@@ -497,7 +504,7 @@ function VaultPage() {
 
   const handleShareExistingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!me || !shareExistingItem) return;
+    if (!me || !shareExistingItem || !canEditVault) return;
     if (!existingShareRecipient) {
       toast.error("Please select a recipient.");
       return;
@@ -575,6 +582,7 @@ function VaultPage() {
   };
 
   const handleDeleteVault = (item: VaultItem) => {
+    if (!canEditVault) return;
     update((d) => {
       d.vaultItems = (d.vaultItems ?? []).filter((v) => v.id !== item.id);
     });
@@ -608,21 +616,25 @@ function VaultPage() {
                 <Lock className="h-4 w-4" /> Lock All
               </Button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openCreateModal("send")}
-              className="gap-1.5 border-purple-500/30 hover:border-purple-500/60"
-            >
-              <Send className="h-4 w-4 text-primary" /> Create & Send
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => openCreateModal("personal")}
-              className="gap-1.5 bg-gradient-to-r from-[#8A007E] to-purple-700 text-white shadow-sm hover:from-[#730068] hover:to-purple-600"
-            >
-              <Plus className="h-4 w-4" /> Create Vault
-            </Button>
+            {canEditVault && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openCreateModal("send")}
+                  className="gap-1.5 border-purple-500/30 hover:border-purple-500/60"
+                >
+                  <Send className="h-4 w-4 text-primary" /> Create & Send
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => openCreateModal("personal")}
+                  className="gap-1.5 bg-gradient-to-r from-[#8A007E] to-purple-700 text-white shadow-sm hover:from-[#730068] hover:to-purple-600"
+                >
+                  <Plus className="h-4 w-4" /> Create Vault
+                </Button>
+              </>
+            )}
           </div>
         }
       />
@@ -939,7 +951,7 @@ function VaultPage() {
                     )}
 
                     <div className="flex items-center gap-1">
-                      {isPersonal && (
+                      {canEditVault && isPersonal && (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -955,7 +967,7 @@ function VaultPage() {
                           <Send className="h-3.5 w-3.5" /> Send
                         </Button>
                       )}
-                      {item.creatorId === me.id && (
+                      {canEditVault && item.creatorId === me.id && (
                         <Button
                           size="icon"
                           variant="ghost"

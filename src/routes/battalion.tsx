@@ -69,8 +69,9 @@ export const Route = createFileRoute("/battalion")({
 });
 
 function BattalionPage() {
-  const { me, ready, myPresence } = useApp();
+  const { me, ready, myPresence, canEditModule } = useApp();
   const isAdminOrSuper = me?.role === "admin" || me?.role === "super_admin";
+  const canEditBattalion = canEditModule("battalion");
 
   const [battalions, setBattalions] = React.useState<PopulatedBattalion[]>([]);
   const [directoryMembers, setDirectoryMembers] = React.useState<BattalionMember[]>([]);
@@ -226,15 +227,17 @@ function BattalionPage() {
         description="Real-time squad roster, live work modes, and time-boxed availability windows."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setStatusModalOpen(true)}
-              className="gap-1.5"
-            >
-              <Radio className="h-3.5 w-3.5 text-[#8A007E] dark:text-purple-400" />
-              My Live Status
-            </Button>
+            {canEditBattalion && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setStatusModalOpen(true)}
+                className="gap-1.5"
+              >
+                <Radio className="h-3.5 w-3.5 text-[#8A007E] dark:text-purple-400" />
+                My Live Status
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -245,7 +248,7 @@ function BattalionPage() {
               <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
               Refresh
             </Button>
-            {isAdminOrSuper && (
+            {isAdminOrSuper && canEditBattalion && (
               <Button
                 size="sm"
                 onClick={() => setCreateOpen(true)}
@@ -368,7 +371,7 @@ function BattalionPage() {
           }
           icon={Users}
           action={
-            effectiveBattalions.length === 0 && isAdminOrSuper ? (
+            effectiveBattalions.length === 0 && isAdminOrSuper && canEditBattalion ? (
               <Button
                 size="sm"
                 onClick={() => setCreateOpen(true)}
@@ -377,7 +380,7 @@ function BattalionPage() {
                 <Plus className="h-4 w-4" />
                 Create Battalion / Team
               </Button>
-            ) : (
+            ) : effectiveBattalions.length === 0 ? undefined : (
               <Button
                 variant="outline"
                 size="sm"
@@ -423,7 +426,7 @@ function BattalionPage() {
                       {activeInSquad} / {squad.members.length} live
                     </span>
 
-                    {isAdminOrSuper && (
+                    {isAdminOrSuper && canEditBattalion && (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -538,7 +541,7 @@ function BattalionPage() {
         </div>
       )}
 
-      {isAdminOrSuper && (
+      {isAdminOrSuper && canEditBattalion && (
         <CreateBattalionDialog
           open={createOpen}
           onOpenChange={setCreateOpen}
@@ -549,11 +552,13 @@ function BattalionPage() {
         />
       )}
 
-      <PresenceSetupModal
-        open={statusModalOpen}
-        onOpenChange={setStatusModalOpen}
-        isMandatoryLoginPrompt={false}
-      />
+      {canEditBattalion && (
+        <PresenceSetupModal
+          open={statusModalOpen}
+          onOpenChange={setStatusModalOpen}
+          isMandatoryLoginPrompt={false}
+        />
+      )}
     </>
   );
 }

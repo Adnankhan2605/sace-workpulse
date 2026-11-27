@@ -21,6 +21,13 @@ import {
 } from "./accounts.functions";
 import { askAddy } from "./addy.functions";
 import { updateMyPresence } from "./battalion.functions";
+import {
+  DEFAULT_MEMBER_MODULE_PERMISSIONS,
+  createFullPermissionsMap,
+  resolveEffectivePermissions,
+  type ModuleKey,
+  type ModulePermissionsMap,
+} from "./permissions";
 import type { UpdatePresenceInput } from "./battalion";
 import type {
   AppNotification,
@@ -118,6 +125,10 @@ interface Ctx {
   deleteAccount: (userId: string) => Promise<Result>;
   refreshAccounts: () => Promise<void>;
   can: (perm: Perm) => boolean;
+  modulePermissions: ModulePermissionsMap;
+  canViewModule: (moduleKey: ModuleKey) => boolean;
+  canEditModule: (moduleKey: ModuleKey) => boolean;
+  refreshPermissions: () => Promise<void>;
   adminPerms: Perm[];
   setAdminPerms: (perms: Perm[]) => void;
   visibleUsers: () => User[];
@@ -186,10 +197,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     ...DEFAULT_PORTAL_BRANDING,
   }));
   const [sessionUserId, setSessionUserId] = React.useState<string | null>(null);
+  const [modulePermissions, setModulePermissions] = React.useState<ModulePermissionsMap>(() => ({
+    ...DEFAULT_MEMBER_MODULE_PERMISSIONS,
+  }));
   const [ready, setReady] = React.useState(false);
   const [dbConnected, setDbConnected] = React.useState(true);
   const loadedFromServerRef = React.useRef(false);
   const pendingSaveRef = React.useRef<Promise<unknown>>(Promise.resolve());
+
+  const refreshPermissions = React.useCallback(async () => {
+    try {
+      const token = getClientSessionToken();
+      const response = await fetch("/api/auth/me", {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          ...(token ? { "x-sace-session": token } : {}),
+        },
+      });
+      if (!response.ok) return;
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        user?: User;
+        permissions?: ModulePermissionsMap;
+      };
+      if (payload.ok && payload.user && payload.permissions) {
+        setModulePermissions(
+          resolveEffectivePermissions(payload.user.role, payload.permissions, null),
+        );
+      }
+    } catch {
+      /* ignore transient permission refresh errors */
+    }
+  }, []);
 
   const loadScopedState = React.useCallback(async (): Promise<Result> => {
     try {
@@ -265,11 +305,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               ? prev.map((u) => (u.id === authUser.id ? authUser : u))
               : [...prev, authUser],
           );
+          if (session.permissions) {
+            setModulePermissions(
+              resolveEffectivePermissions(authUser.role, session.permissions, null),
+            );
+          } else {
+            setModulePermissions(
+              authUser.role === "super_admin"
+                ? createFullPermissionsMap()
+                : resolveEffectivePermissions(authUser.role, null, null),
+            );
+          }
           setSessionUserId(authUser.id);
           await loadScopedState();
         } else {
           // Ensure any stale legacy cache is wiped if unauthenticated
           setClientSessionToken(null);
+          setModulePermissions({ ...DEFAULT_MEMBER_MODULE_PERMISSIONS });
           clearPortalClientStorage();
         }
       } catch {
@@ -317,8 +369,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refreshAccounts = React.useCallback(async () => {
     if (!sessionUserId) return;
-    await loadScopedState();
-  }, [sessionUserId, loadScopedState]);
+    await Promise.all([loadScopedState(), refreshPermissions()]);
+  }, [sessionUserId, loadScopedState, refreshPermissions]);
 
   const update = React.useCallback((fn: (draft: AppState) => void) => {
     setState((prev) => {
@@ -359,6 +411,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const merged: AppState = { ...state, users, adminPerms, sessionUserId };
   const me = users.find((u) => u.id === sessionUserId) ?? null;
 
+  const effectiveModulePermissions = React.useMemo<ModulePermissionsMap>(() => {
+    if (!me) return DEFAULT_MEMBER_MODULE_PERMISSIONS;
+    if (me.role === "super_admin") return createFullPermissionsMap();
+    return modulePermissions;
+  }, [me, modulePermissions]);
+
+  const canViewModule = React.useCallback(
+    (moduleKey: ModuleKey) => {
+      if (!me) return false;
+      if (me.role === "super_admin") return true;
+      return Boolean(effectiveModulePermissions[moduleKey]?.view);
+    },
+    [me, effectiveModulePermissions],
+  );
+
+  const canEditModule = React.useCallback(
+    (moduleKey: ModuleKey) => {
+      if (!me) return false;
+      if (me.role === "super_admin") return true;
+      const perm = effectiveModulePermissions[moduleKey];
+      return Boolean(perm?.view && perm?.edit);
+    },
+    [me, effectiveModulePermissions],
+  );
+
   const markNotificationRead = React.useCallback(
     (notificationId: string) => {
       update((d) => {
@@ -397,6 +474,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const markModuleRead = React.useCallback(
     (route: string) => {
       if (!sessionUserId) return;
+      const canEditMessages = canEditModule("messages_tickets");
       update((d) => {
         d.notifications.forEach((n) => {
           if (n.userId === sessionUserId && n.href?.startsWith(route)) {
@@ -404,7 +482,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         });
 
-        if (route.startsWith("/messages")) {
+        if (route.startsWith("/messages") && canEditMessages) {
           const userConvIds = new Set(
             d.conversations
               .filter((c) => c.kind === "announcement" || c.participantIds?.includes(sessionUserId))
@@ -421,7 +499,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       });
     },
-    [sessionUserId, update],
+    [sessionUserId, update, canEditModule],
   );
 
   const unreadCounts = React.useMemo(() => {
@@ -541,6 +619,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let res: {
           ok?: boolean;
           user?: User;
+          permissions?: ModulePermissionsMap;
           sessionToken?: string;
           error?: string;
         } | null = null;
@@ -548,6 +627,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           res = (await response.json()) as {
             ok?: boolean;
             user?: User;
+            permissions?: ModulePermissionsMap;
             sessionToken?: string;
             error?: string;
           };
@@ -567,6 +647,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         const authUser = res.user;
+        if (typeof window !== "undefined") {
+          try {
+            window.sessionStorage.removeItem("sace_vision_dismissed");
+            window.sessionStorage.removeItem(`sace_vision_dismissed_${authUser.id}`);
+          } catch {
+            /* ignore */
+          }
+        }
         // Persist signed session token for header auth fallback (iframe-safe) & seed user synchronously
         setClientSessionToken(res.sessionToken ?? null);
         setUsers((prev) =>
@@ -574,6 +662,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             ? prev.map((u) => (u.id === authUser.id ? authUser : u))
             : [...prev, authUser],
         );
+        if (res.permissions) {
+          setModulePermissions(resolveEffectivePermissions(authUser.role, res.permissions, null));
+        } else {
+          setModulePermissions(resolveEffectivePermissions(authUser.role, null, null));
+        }
         setSessionUserId(authUser.id);
         setReady(true);
 
@@ -582,6 +675,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setClientSessionToken(null);
           setSessionUserId(null);
           setUsers([]);
+          setModulePermissions({ ...DEFAULT_MEMBER_MODULE_PERMISSIONS });
           return {
             ok: false,
             error: "Session could not be verified. Please refresh and sign in again.",
@@ -610,6 +704,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         let res: {
           ok?: boolean;
           user?: User;
+          permissions?: ModulePermissionsMap;
           sessionToken?: string;
           error?: string;
         } | null = null;
@@ -617,6 +712,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           res = (await response.json()) as {
             ok?: boolean;
             user?: User;
+            permissions?: ModulePermissionsMap;
             sessionToken?: string;
             error?: string;
           };
@@ -640,6 +736,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           prev.some((u) => u.id === authUser.id)
             ? prev.map((u) => (u.id === authUser.id ? authUser : u))
             : [...prev, authUser],
+        );
+        setModulePermissions(
+          res.permissions
+            ? resolveEffectivePermissions(authUser.role, res.permissions, null)
+            : createFullPermissionsMap(),
         );
         setSessionUserId(authUser.id);
         setReady(true);
@@ -680,6 +781,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       clearPortalClientStorage(activeId);
       setSessionUserId(null);
       setUsers([]);
+      setModulePermissions({ ...DEFAULT_MEMBER_MODULE_PERMISSIONS });
       setState(createEmptyState());
     },
 
@@ -887,6 +989,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return false;
     },
 
+    modulePermissions: effectiveModulePermissions,
+    canViewModule,
+    canEditModule,
+    refreshPermissions,
+
     setAdminPerms: (perms) => {
       void saveAdminPermsFn({ data: { perms } })
         .then(() => setPerms(perms))
@@ -961,6 +1068,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       loadedFromServerRef.current = false;
       setState(createEmptyState());
       setUsers([]);
+      setModulePermissions({ ...DEFAULT_MEMBER_MODULE_PERMISSIONS });
       setSessionUserId(null);
     },
   };

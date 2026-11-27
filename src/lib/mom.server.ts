@@ -17,6 +17,7 @@ import {
   SaveMomDocumentSchema,
   sanitizeMomHtml,
 } from "./mom.ts";
+import { assertModuleAccess } from "./permissions.server.ts";
 import { assertRateLimit } from "./rate-limit.server.ts";
 import { createEmptyPortalState } from "./seed.ts";
 import type {
@@ -315,6 +316,7 @@ function canUserModifyMom(doc: MomDocument, userId: string, role: Role): boolean
 }
 
 export async function listMomWorkspace(callerId: string, role: Role) {
+  await assertModuleAccess(callerId, role, "mom", "view");
   const { existing } = await loadPortalStateAndUsers();
   const allDocs = existing.momDocuments ?? [];
   const allAssets = existing.momBrandAssets ?? [];
@@ -519,7 +521,9 @@ export async function generateMomFromSource(
     languageHint?: string;
     titleOverride?: string;
   },
+  role: Role = "member",
 ): Promise<{ ok: true; document: MomDocument }> {
+  await assertModuleAccess(callerId, role, "mom", "edit");
   assertRateLimit(`mom-gen:${callerId}`, { limit: 15, windowMs: 60_000 });
 
   const { file, sourceType, languageHint, titleOverride } = options;
@@ -754,6 +758,7 @@ export async function saveMomDocumentRecord(
   role: Role,
   rawInput: unknown,
 ): Promise<{ ok: true; document: MomDocument }> {
+  await assertModuleAccess(callerId, role, "mom", "edit");
   assertRateLimit(`mom-save:${callerId}`, { limit: 120, windowMs: 60_000 });
   const parsed = SaveMomDocumentSchema.parse(rawInput);
 
@@ -848,6 +853,7 @@ export async function deleteMomDocumentRecord(
   role: Role,
   docId: string,
 ): Promise<{ ok: true }> {
+  await assertModuleAccess(callerId, role, "mom", "edit");
   const { existing, publicUsers } = await loadPortalStateAndUsers();
   const docs = existing.momDocuments ?? [];
   const target = docs.find((d) => d.id === docId);
@@ -879,7 +885,9 @@ export async function saveMomBrandAssetUpload(
     name?: string;
     letterheadMode?: "header" | "fullpage";
   },
+  role: Role = "member",
 ): Promise<{ ok: true; asset: MomBrandAsset }> {
+  await assertModuleAccess(callerId, role, "mom", "edit");
   assertRateLimit(`mom-asset:${callerId}`, { limit: 30, windowMs: 60_000 });
   const { file, kind, name, letterheadMode } = options;
 
@@ -968,6 +976,7 @@ export async function deleteMomBrandAssetRecord(
   role: Role,
   assetId: string,
 ): Promise<{ ok: true }> {
+  await assertModuleAccess(callerId, role, "mom", "edit");
   const { existing, publicUsers } = await loadPortalStateAndUsers();
   const assets = existing.momBrandAssets ?? [];
   const target = assets.find((a) => a.id === assetId);

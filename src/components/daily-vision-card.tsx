@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { toast } from "sonner";
 import { useApp } from "@/lib/store";
 
 // Curated list of daily motivational & leadership quotes
@@ -12,52 +13,86 @@ const dailyQuotes = [
   "Success is the sum of small efforts, repeated day in and day out.",
 ];
 
+function getTodayAutoQuote() {
+  const dayIndex = Math.floor(Date.now() / (1000 * 60 * 60 * 24)) % dailyQuotes.length;
+  return dailyQuotes[dayIndex] ?? dailyQuotes[0] ?? "";
+}
+
 export default function DailyVisionCard() {
-  const { me } = useApp();
+  const { me, canEditModule, saveUser } = useApp();
+  const canEditDashboard = canEditModule("dashboard");
   const [vision, setVision] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [customInput, setCustomInput] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const visionKey = me ? `sace_custom_vision_${me.id}` : null;
   const dateKeyName = me ? `sace_vision_date_${me.id}` : null;
 
   useEffect(() => {
-    if (!visionKey || !dateKeyName) return;
-    const savedCustomVision = localStorage.getItem(visionKey);
-    const savedDate = localStorage.getItem(dateKeyName);
-    const todayStr = new Date().toDateString();
+    if (!me) return;
+    const savedFromAccount = me.dailyVision?.trim();
+    if (savedFromAccount) {
+      setVision(savedFromAccount);
+      return;
+    }
 
-    // Only use custom vision if it was explicitly saved today AND isn't leftover test data
-    if (savedCustomVision && savedDate === todayStr && savedCustomVision !== "test in4") {
-      setVision(savedCustomVision);
-    } else {
-      // Clear outdated test data and load today's automatic quote
+    if (visionKey && dateKeyName) {
+      const savedCustomVision = localStorage.getItem(visionKey);
+      const savedDate = localStorage.getItem(dateKeyName);
+      const todayStr = new Date().toDateString();
+
+      if (savedCustomVision && savedDate === todayStr && savedCustomVision !== "test in4") {
+        setVision(savedCustomVision);
+        return;
+      }
+
       localStorage.removeItem(visionKey);
       localStorage.removeItem(dateKeyName);
-
-      const dayIndex = Math.floor(Date.now() / (1000 * 60 * 60 * 24)) % dailyQuotes.length;
-      setVision(dailyQuotes[dayIndex] ?? dailyQuotes[0] ?? "");
     }
-  }, [visionKey, dateKeyName]);
 
-  const handleSave = () => {
-    if (!visionKey || !dateKeyName) return;
-    if (customInput.trim()) {
-      setVision(customInput);
-      localStorage.setItem(visionKey, customInput);
-      localStorage.setItem(dateKeyName, new Date().toDateString());
+    setVision(getTodayAutoQuote());
+  }, [me, me?.dailyVision, visionKey, dateKeyName]);
+
+  const handleSave = async () => {
+    if (!me || !canEditDashboard || saving) return;
+    const trimmed = customInput.trim();
+    if (!trimmed) {
+      toast.error("Please enter your daily vision before saving.");
+      return;
     }
-    setIsEditing(false);
-  };
-
-  const handleResetToDaily = () => {
+    setSaving(true);
+    const res = await saveUser({ userId: me.id, dailyVision: trimmed });
+    setSaving(false);
+    if (!res.ok) {
+      toast.error(res.error ?? "Could not save daily vision.");
+      return;
+    }
     if (visionKey && dateKeyName) {
       localStorage.removeItem(visionKey);
       localStorage.removeItem(dateKeyName);
     }
-    const dayIndex = Math.floor(Date.now() / (1000 * 60 * 60 * 24)) % dailyQuotes.length;
-    setVision(dailyQuotes[dayIndex] ?? dailyQuotes[0] ?? "");
+    setVision(trimmed);
     setIsEditing(false);
+    toast.success("Daily vision saved");
+  };
+
+  const handleResetToDaily = async () => {
+    if (!me || !canEditDashboard || saving) return;
+    setSaving(true);
+    const res = await saveUser({ userId: me.id, dailyVision: null });
+    setSaving(false);
+    if (!res.ok) {
+      toast.error(res.error ?? "Could not reset daily vision.");
+      return;
+    }
+    if (visionKey && dateKeyName) {
+      localStorage.removeItem(visionKey);
+      localStorage.removeItem(dateKeyName);
+    }
+    setVision(getTodayAutoQuote());
+    setIsEditing(false);
+    toast.success("Reset to daily quote");
   };
 
   if (!me) return null;
@@ -92,23 +127,30 @@ export default function DailyVisionCard() {
             placeholder="Enter your custom daily vision or quote..."
             className="w-full p-3 bg-purple-950/80 border border-purple-500/40 rounded-xl text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none h-20"
             maxLength={180}
+            disabled={saving}
           />
           <div className="flex items-center space-x-2 text-xs">
             <button
-              onClick={handleSave}
-              className="px-3 py-1.5 bg-white text-[#2D0029] font-semibold rounded-lg hover:bg-purple-100 transition-colors"
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={saving || !customInput.trim()}
+              className="px-3 py-1.5 bg-white text-[#2D0029] font-semibold rounded-lg hover:bg-purple-100 transition-colors disabled:opacity-50"
             >
-              Save Vision
+              {saving ? "Saving..." : "Save Vision"}
             </button>
             <button
-              onClick={handleResetToDaily}
-              className="px-3 py-1.5 bg-purple-800/60 text-purple-200 rounded-lg hover:bg-purple-800 transition-colors"
+              type="button"
+              onClick={() => void handleResetToDaily()}
+              disabled={saving}
+              className="px-3 py-1.5 bg-purple-800/60 text-purple-200 rounded-lg hover:bg-purple-800 transition-colors disabled:opacity-50"
             >
               Reset to Auto-Daily
             </button>
             <button
+              type="button"
               onClick={() => setIsEditing(false)}
-              className="px-3 py-1.5 text-purple-300 hover:text-white transition-colors"
+              disabled={saving}
+              className="px-3 py-1.5 text-purple-300 hover:text-white transition-colors disabled:opacity-50"
             >
               Cancel
             </button>
@@ -117,9 +159,10 @@ export default function DailyVisionCard() {
       )}
 
       {/* Action Button */}
-      {!isEditing && (
+      {!isEditing && canEditDashboard && (
         <div>
           <button
+            type="button"
             onClick={() => {
               setCustomInput(vision);
               setIsEditing(true);

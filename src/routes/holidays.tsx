@@ -78,8 +78,10 @@ export const Route = createFileRoute("/holidays")({
 });
 
 function HolidaysPage() {
-  const { state, me, can, update, log } = useApp();
-  const isAdmin = me?.role === "super_admin" || me?.role === "admin" || can("manage_holidays");
+  const { state, me, can, canEditModule, update, log } = useApp();
+  const isAdmin =
+    canEditModule("leave") &&
+    (me?.role === "super_admin" || me?.role === "admin" || can("manage_holidays"));
 
   const todayKey = dateKey(new Date());
   const currentMonthPrefix = todayKey.slice(0, 7);

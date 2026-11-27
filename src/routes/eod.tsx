@@ -51,8 +51,9 @@ export const Route = createFileRoute("/eod")({
 });
 
 function EodPage() {
-  const { state, me, visibleUsers, can } = useApp();
+  const { state, me, visibleUsers, can, canEditModule } = useApp();
   const isAdmin = can("view_all_eod");
+  const canEditEod = canEditModule("eod");
   const [period, setPeriod] = React.useState<EodPeriod>("all");
   const [personId, setPersonId] = React.useState<string>(isAdmin ? "all" : (me?.id ?? "all"));
   const [writeDialogOpen, setWriteDialogOpen] = React.useState(false);
@@ -95,13 +96,15 @@ function EodPage() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => setWriteDialogOpen(true)}
-              className="gap-1.5 shadow-sm"
-            >
-              <Plus className="h-4 w-4" /> Write report
-            </Button>
+            {canEditEod && (
+              <Button
+                size="sm"
+                onClick={() => setWriteDialogOpen(true)}
+                className="gap-1.5 shadow-sm"
+              >
+                <Plus className="h-4 w-4" /> Write report
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -189,7 +192,8 @@ function EodPage() {
           {reports.map((r) => {
             const u = state.users.find((x) => x.id === r.userId);
             const canEdit =
-              me?.role === "super_admin" || me?.role === "admin" || me?.id === r.userId;
+              canEditEod &&
+              (me?.role === "super_admin" || me?.role === "admin" || me?.id === r.userId);
             const linkedTasks = (r.taskIds ?? [])
               .map((id) => state.tasks.find((t) => t.id === id))
               .filter(Boolean);
@@ -294,15 +298,17 @@ function EodPage() {
       )}
 
       {/* New Report Dialog */}
-      <EodLogoutDialog
-        open={writeDialogOpen}
-        onOpenChange={setWriteDialogOpen}
-        mode="write"
-        onDone={() => setWriteDialogOpen(false)}
-      />
+      {canEditEod && (
+        <EodLogoutDialog
+          open={writeDialogOpen}
+          onOpenChange={setWriteDialogOpen}
+          mode="write"
+          onDone={() => setWriteDialogOpen(false)}
+        />
+      )}
 
       {/* Edit Existing Report Dialog */}
-      {editingReport && (
+      {canEditEod && editingReport && (
         <EodLogoutDialog
           open={!!editingReport}
           onOpenChange={(open) => {
